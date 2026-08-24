@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy &middot; rclone-42prague</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Privacy Policy</h1>
+  <p class="tagline">rclone-42prague</p>
+  <p class="meta">Last updated: 24 August 2026</p>
+  <nav>
+    <a href="./">Home</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+  </nav>
+</header>
+
+<h2>1. Who this policy covers</h2>
+<p>
+  This policy describes how the application <strong>rclone-42prague</strong> ("the app") handles
+  information. The app is a personal, non-commercial configuration of the open-source program
+  <a href="https://rclone.org/" rel="noopener">rclone</a>, operated by Maxim Lomovskoy as an
+  individual. The app is used only by its author, on their own devices, with their own Google
+  account.
+</p>
+
+<h2>2. What the app accesses</h2>
+<p>The app requests one Google API scope:</p>
+<div class="card">
+  <p style="margin:0"><code>https://www.googleapis.com/auth/drive.file</code></p>
+</div>
+<p>
+  This scope gives per-file access: the app can only read, create and modify files and folders
+  in Google Drive that the app itself created, or that the user explicitly selected for it. The
+  app has no access to any other content in the user's Google Drive, and does not request access
+  to Gmail, Contacts, Calendar, Photos, or any other Google service.
+</p>
+
+<h2>3. What the app does with data</h2>
+<ul>
+  <li>File contents are transferred directly between the user's own device and Google's servers.</li>
+  <li>The app does not send file contents, file names, or metadata to the developer or to any third party.</li>
+  <li>There is no server, database, analytics service, or hosted backend operated by the developer. This website is a set of static pages and does not receive any data from the app.</li>
+  <li>No advertising, profiling, tracking, or machine-learning training is performed on any data.</li>
+  <li>No data is sold, rented, or shared. It is never transferred to anyone else.</li>
+</ul>
+
+<h2>4. Credentials and tokens</h2>
+<p>
+  When the user signs in with Google, Google issues an OAuth access token and refresh token.
+  These are stored only in the rclone configuration file on the user's own computer
+  (typically <code>~/.config/rclone/rclone.conf</code>). The developer never receives or stores
+  them. Their security depends on the security of the user's own device and account.
+</p>
+
+<h2>5. Data retention and deletion</h2>
+<p>
+  The app stores no data of its own beyond the local rclone configuration file. Access can be
+  revoked at any time from the Google Account permissions page at
+  <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>.
+  Deleting the local rclone configuration file removes the stored tokens from the device. Files
+  in Google Drive are managed by the user directly through Google Drive.
+</p>
+
+<h2>6. Google API Services User Data Policy</h2>
+<p>
+  The app's use of information received from Google APIs adheres to the
+  <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google
+  API Services User Data Policy</a>, including the Limited Use requirements.
+</p>
+
+<h2>7. Children</h2>
+<p>The app is not directed at children and is not intended for use by anyone under 13.</p>
+
+<h2>8. Changes to this policy</h2>
+<p>
+  If this policy changes, the updated version will be published on this page with a new
+  "last updated" date.
+</p>
+
+<h2>9. Contact</h2>
+<p>
+  Maxim Lomovskoy &mdash; <a href="mailto:mlomovskoy@gmail.com">mlomovskoy@gmail.com</a>
+</p>
+
+<footer>
+  <p>rclone-42prague &middot; <a href="./">Home</a> &middot; <a href="terms.html">Terms of Service</a></p>
+</footer>
+</div>
+</body>
+</html>
