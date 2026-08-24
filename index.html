@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rclone-42prague</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>rclone-42prague</h1>
+  <p class="tagline">A personal tool for syncing a local folder with Google Drive using rclone.</p>
+  <nav>
+    <a href="./">Home</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+  </nav>
+</header>
+
+<h2>What this is</h2>
+<p>
+  <strong>rclone-42prague</strong> is a personal, non-commercial configuration of
+  <a href="https://rclone.org/" rel="noopener">rclone</a>, an open-source command-line
+  program for managing files on cloud storage. It is used by a single individual to keep a
+  local folder in sync with their own Google Drive account across the computers they work on,
+  including machines at the 42 Prague campus.
+</p>
+
+<h2>How it works</h2>
+<ul>
+  <li>The user signs in with their own Google account and grants access.</li>
+  <li>rclone then copies files between that Google Drive account and a folder on the user's computer.</li>
+  <li>Everything runs locally on the user's own machine. There is no server, no hosted backend, and no website that processes files.</li>
+</ul>
+
+<h2>Google account access</h2>
+<div class="card">
+  <p style="margin-top:0">This app requests a single Google Drive scope:</p>
+  <p><code>https://www.googleapis.com/auth/drive.file</code></p>
+  <p style="margin-bottom:0">
+    This is the most limited Drive scope available. It grants access only to files and folders
+    the app itself creates or that the user explicitly opens with it. The app cannot see or touch
+    the rest of the user's Drive.
+  </p>
+</div>
+
+<h2>Who it is for</h2>
+<p>
+  This is a private tool built and used by its author. It is not offered as a product or service
+  to other people, and there is nothing to sign up for.
+</p>
+
+<h2>Contact</h2>
+<p>Questions about this app: <a href="mailto:mlomovskoy@gmail.com">mlomovskoy@gmail.com</a></p>
+
+<footer>
+  <p>rclone-42prague &middot; <a href="privacy.html">Privacy Policy</a> &middot; <a href="terms.html">Terms of Service</a></p>
+</footer>
+</div>
+</body>
+</html>
