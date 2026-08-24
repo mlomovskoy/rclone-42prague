@@ -1,0 +1,29 @@
+# ---- rclone credentials: NEVER commit these ----
+rclone.conf
+*.conf
+.rclone/
+rclone-*.json
+
+# Google OAuth client files downloaded from Cloud Console
+client_secret*.json
+*credentials*.json
+*token*.json
+
+# ---- environment / secrets ----
+.env
+.env.*
+secrets/
+*.key
+*.pem
+
+# ---- logs and temp ----
+*.log
+*.tmp
+bisync-state/
+
+# ---- OS and editor junk ----
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
