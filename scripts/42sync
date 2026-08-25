@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# 42sync — two-way sync of ~/Projects with gdrive:_projects_rclone via rclone bisync.
+#
+#   42sync seed     first time on a NEW machine: pull from Drive, then establish baseline
+#   42sync          normal run: two-way sync
+#   42sync check    dry run: show what WOULD change, touch nothing
+#   42sync status   show local size and last sync time
+#
+# Install:  mkdir -p ~/bin && cp 42sync ~/bin/ && chmod +x ~/bin/42sync
+#           (make sure ~/bin is on your PATH)
+
+set -euo pipefail
+
+LOCAL="$HOME/Projects"
+REMOTE="gdrive:_projects_rclone"
+FILTERS="$HOME/.config/rclone/projects-filters.txt"
+LOGDIR="$HOME/.local/state/42sync"
+LOG="$LOGDIR/last.log"
+
+mkdir -p "$LOGDIR" "$(dirname "$FILTERS")"
+
+# Filter file: created once, edit it freely afterwards.
+if [[ ! -f "$FILTERS" ]]; then
+  cat > "$FILTERS" <<'EOF'
+# Excluded from sync. Lines starting with "- " are excludes.
+# .git is deliberately NOT excluded — repos sync whole.
+- .DS_Store
+- .Trash-*/**
+- **/*.o
+- **/.cache/**
+EOF
+  echo "Created filter file: $FILTERS"
+fi
+
+# Safety flags:
+#   --check-access  refuses to run unless RCLONE_TEST marker files are present on BOTH
+#                   sides. This is what stops a wiped local home from deleting Drive.
+#   --max-delete    aborts if more than 25% of files would be deleted.
+COMMON=(
+  --filter-from "$FILTERS"
+  --check-access
+  --max-delete 25
+  --verbose
+)
+
+die() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+ok()  { printf '\n\033[32m%s\033[0m\n' "$*"; }
+
+case "${1:-sync}" in
+
+  seed)
+    echo "Seeding $LOCAL from $REMOTE ..."
+    mkdir -p "$LOCAL"
+    if [[ -n "$(ls -A "$LOCAL" 2>/dev/null)" ]]; then
+      die "$LOCAL is not empty. 'seed' is only for a fresh machine.
+Run '42sync check' first to see what a normal sync would do."
+    fi
+    rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --verbose
+    # Access markers must exist on both sides for --check-access to work.
+    touch "$LOCAL/RCLONE_TEST"
+    rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
+    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" --resync 2>&1 | tee "$LOG"
+    ok "Seeded. From now on just run: 42sync"
+    ;;
+
+  check)
+    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" --dry-run 2>&1 | tee "$LOG"
+    ok "Dry run only — nothing was changed."
+    ;;
+
+  status)
+    echo "Local:  $LOCAL"
+    du -sh "$LOCAL" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
+    echo "Remote: $REMOTE"
+    rclone size "$REMOTE" --filter-from "$FILTERS" 2>/dev/null || true
+    echo
+    echo "Last sync log: $LOG"
+    [[ -f "$LOG" ]] && tail -3 "$LOG"
+    ;;
+
+  sync)
+    [[ -d "$LOCAL" ]] || die "$LOCAL does not exist. On a new machine run: 42sync seed"
+    [[ -f "$LOCAL/RCLONE_TEST" ]] || die "Access marker missing from $LOCAL.
+This usually means the local folder was wiped or is not the synced one.
+Refusing to sync — inspect it first, then run '42sync seed' on a fresh machine."
+
+    # Warn about uncommitted work: Drive is a mirror, not a substitute for git.
+    while IFS= read -r -d '' gitdir; do
+      repo="$(dirname "$gitdir")"
+      if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
+        printf '\033[33muncommitted changes: %s\033[0m\n' "${repo#$LOCAL/}"
+      fi
+    done < <(find "$LOCAL" -type d -name .git -print0 2>/dev/null)
+
+    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" 2>&1 | tee "$LOG"
+    ok "Synced. Log: $LOG"
+    ;;
+
+  *)
+    die "Usage: 42sync [seed|sync|check|status]"
+    ;;
+esac

@@ -1,0 +1,40 @@
+=====================================================================
+  THIS FOLDER IS MANAGED BY RCLONE. DO NOT ADD FILES HERE.
+=====================================================================
+
+  Mirror of ~/Projects on the 42 Prague campus machines.
+  Synced with:  rclone bisync  (app: rclone-42prague, scope: drive.file)
+
+---------------------------------------------------------------------
+  WHY YOU MUST NOT DROP FILES IN HERE VIA THE WEB
+---------------------------------------------------------------------
+
+  The sync uses Google's "drive.file" scope. rclone can only see files
+  it created itself.
+
+  Anything you upload through drive.google.com is INVISIBLE to rclone.
+  It will sit here looking synced, and it will never reach your laptop
+  or any campus machine. There is no error message. It just never
+  arrives.
+
+  Files must enter through the LOCAL side:
+
+      put it in ~/Projects/...   then run:   42sync
+
+---------------------------------------------------------------------
+  ALSO
+---------------------------------------------------------------------
+
+  - Do not rename or move folders here from the web UI. rclone tracks
+    them by ID, but bisync compares paths, and it will read a web-side
+    rename as "deleted here, still there" on the next run.
+
+  - Deleting things here DOES propagate — the next sync removes them
+    locally too. That part works.
+
+  - Git repos are mirrored whole, .git included. This is a convenience
+    copy, NOT a git remote. Push to vogsphere before you leave a seat.
+
+  - Never sync from two machines at the same time.
+
+=====================================================================
