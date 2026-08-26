@@ -30,6 +30,7 @@ That makes the sync load-bearing, not a convenience:
 ```
 README.md                    this file
 TROUBLESHOOTING.md           every error hit during setup, and the fix
+scripts/42install            installs the two below, plus rclone itself
 scripts/42sync               the sync wrapper (install to ~/bin)
 scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
 templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
@@ -102,10 +103,11 @@ Cost of publishing: an unverified-app warning screen during `rclone config`
 ## First-time setup on a new machine
 
 ```bash
-# 1. Install the scripts
-mkdir -p ~/bin
-cp scripts/42sync scripts/42links ~/bin/ && chmod +x ~/bin/42sync ~/bin/42links
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+# 1. Install rclone, 42sync and 42links into ~/bin -- no root required
+git clone https://github.com/<your-github-username>/rclone-42prague.git
+cd rclone-42prague
+./scripts/42install
+exec zsh                      # pick up the new PATH
 
 # 2. Configure the remote
 rclone config
@@ -130,6 +132,15 @@ chmod 600 ~/.config/rclone/rclone.conf
 # 5. Create the ~/docs and ~/repos shortcuts
 42links
 ```
+
+`42install` ends by printing whichever of steps 2–5 still apply on this machine, so
+you can tell what is left without re-reading this file. It downloads rclone as a plain
+binary into `~/bin` (campus machines give you no admin rights) and verifies its SHA256
+before installing. It deliberately stops short of `rclone config` and `42sync seed` —
+both need decisions it should not make for you.
+
+Re-run it any time to update the tools. It is idempotent: it only touches what has
+actually changed, and `42install check` shows what it would do without doing it.
 
 `42sync seed` refuses to run against a non-empty `~/Projects`. That is deliberate —
 it exists to prevent a half-populated folder from being taken as the truth.

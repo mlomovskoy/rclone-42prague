@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+#
+# 42install — put rclone, 42sync and 42links in ~/bin. No root required.
+#
+#   42install         install or update whatever needs it
+#   42install check   show what would happen, change nothing
+#   42install force   reinstall rclone even when the wanted version is already there
+#
+# Campus machines give you no admin rights, so rclone is installed as a plain
+# binary in ~/bin rather than through a package manager. Everything here is
+# idempotent: re-running is safe, and is the intended way to update.
+#
+# Pin a version instead of taking whatever is current:
+#   INSTALL_RCLONE_VERSION=1.75.0 42install
+#
+# Deliberately not named RCLONE_VERSION: rclone reads every RCLONE_<FLAG>
+# variable in the environment as --<flag>, so RCLONE_VERSION=1.75.0 becomes
+# --version=1.75.0 on every rclone call — an invalid boolean, which makes even
+# `rclone version` fail.
+#
+# This installs tools. It does NOT configure the remote or move any data —
+# `rclone config` and `42sync seed` stay manual because both need decisions
+# only you can make. The summary at the end says which are still outstanding.
+
+set -euo pipefail
+
+BINDIR="$HOME/bin"
+BASE_URL="https://downloads.rclone.org"
+SCRIPTS=(42sync 42links)
+
+# This file's own directory, so the installer works from a clone in any path.
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+red()    { printf '\033[31m%s\033[0m\n' "$*"; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
+die()    { red "$*" >&2; exit 1; }
+
+MODE="${1:-install}"
+DRY=0
+FORCE=0
+case "$MODE" in
+  install) ;;
+  check)   DRY=1 ;;
+  force)   FORCE=1 ;;
+  *)       die "Usage: 42install [install|check|force]" ;;
+esac
+
+TODO=()          # things left for the user, printed at the end
+note_todo() { TODO+=("$1"); }
+
+TMP=""
+cleanup() { [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"; return 0; }
+trap cleanup EXIT
+
+# ---------------------------------------------------------------- platform ---
+
+case "$(uname -s)" in
+  Linux)  OS=linux ;;
+  Darwin) OS=osx ;;
+  *)      die "Unsupported OS: $(uname -s). This installer covers Linux and macOS." ;;
+esac
+
+case "$(uname -m)" in
+  x86_64|amd64)  ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *)             die "Unsupported architecture: $(uname -m)." ;;
+esac
+
+# ----------------------------------------------------------------- helpers ---
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+fetch() {  # url dest
+  if   have curl; then curl -fsSL --retry 3 --max-time 300 -o "$2" "$1"
+  elif have wget; then wget -q -O "$2" "$1"
+  else die "Need curl or wget to download rclone."
+  fi
+}
+
+sha256_of() {
+  if   have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum;    then shasum -a 256 "$1" | awk '{print $1}'
+  else die "Need sha256sum or shasum to verify the download."
+  fi
+}
+
+# Look in $BINDIR before consulting PATH: on a fresh machine ~/bin is not on PATH
+# yet (this script is what puts it there), so trusting `command -v` alone would
+# miss an rclone we installed a moment ago and re-download it on every run.
+# Sets RCLONE_PATH and RCLONE_VER. Deliberately not a value-returning function:
+# called in a command substitution it would set those in a subshell, and the
+# caller would see them empty.
+RCLONE_PATH=""
+RCLONE_VER=""
+detect_rclone() {
+  RCLONE_PATH=""; RCLONE_VER=""
+  if   [[ -x "$BINDIR/rclone" ]]; then RCLONE_PATH="$BINDIR/rclone"
+  elif have rclone;              then RCLONE_PATH="$(command -v rclone)"
+  else return 0
+  fi
+  # `rclone version` does not read the config file, so this never prompts for
+  # the config password even when the config is encrypted.
+  RCLONE_VER="$("$RCLONE_PATH" version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//' || true)"
+  if [[ -z "$RCLONE_VER" ]]; then
+    yellow "warn       found $RCLONE_PATH but could not read its version"
+    echo   "           A stray RCLONE_* variable in your environment will do this:"
+    echo   "           rclone reads RCLONE_<FLAG> as --<flag>. Check with: env | grep ^RCLONE_"
+  fi
+}
+
+count_line() {  # file line -> how many exact matches
+  [[ -f "$1" ]] || { echo 0; return 0; }
+  grep -Fxc -- "$2" "$1" 2>/dev/null || true
+}
+
+ensure_line() {  # file line description
+  local file="$1" line="$2" what="$3" n
+  n="$(count_line "$file" "$line")"
+  if (( n > 1 )); then
+    yellow "duplicate  $what appears $n times in ${file/#$HOME/\~} — harmless, but tidy it up"
+    return 0
+  fi
+  if (( n == 1 )); then
+    green "ok         $what already in ${file/#$HOME/\~}"
+    return 0
+  fi
+  if (( DRY )); then
+    yellow "would add  $what to ${file/#$HOME/\~}"
+  else
+    printf '%s\n' "$line" >> "$file"
+    green "added      $what to ${file/#$HOME/\~}"
+  fi
+}
+
+# ------------------------------------------------------------------ rclone ---
+
+install_rclone() {
+  local want installed asset url expected actual
+
+  want="${INSTALL_RCLONE_VERSION:-}"
+  if [[ -z "$want" ]]; then
+    TMP="${TMP:-$(mktemp -d)}"
+    fetch "$BASE_URL/version.txt" "$TMP/version.txt" \
+      || die "Could not reach $BASE_URL — check the network, or pin INSTALL_RCLONE_VERSION."
+    # version.txt reads: "rclone v1.75.0"
+    want="$(awk '{print $2}' "$TMP/version.txt" | sed 's/^v//')"
+  fi
+  [[ -n "$want" ]] || die "Could not determine which rclone version to install."
+
+  detect_rclone
+  installed="$RCLONE_VER"
+
+  if [[ -n "$installed" ]] && (( ! FORCE )); then
+    if [[ "$installed" == "$want" ]]; then
+      green "ok         rclone v$installed already installed ($RCLONE_PATH)"
+      return 0
+    fi
+    yellow "update     rclone v$installed -> v$want"
+  elif [[ -n "$installed" ]]; then
+    yellow "reinstall  rclone v$installed -> v$want (force)"
+  else
+    yellow "install    rclone v$want"
+  fi
+
+  if (( DRY )); then
+    echo "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip, verify its"
+    echo "  SHA256, and install the binary to ${BINDIR/#$HOME/\~}/rclone"
+    return 0
+  fi
+
+  TMP="${TMP:-$(mktemp -d)}"
+  asset="rclone-v$want-$OS-$ARCH.zip"
+  url="$BASE_URL/v$want/$asset"
+
+  echo "  downloading $asset"
+  fetch "$url" "$TMP/$asset" || die "Download failed: $url"
+  fetch "$BASE_URL/v$want/SHA256SUMS" "$TMP/SHA256SUMS" \
+    || die "Could not fetch SHA256SUMS for v$want — refusing to install unverified."
+
+  # SHA256SUMS is PGP-clearsigned, so pull out the one line rather than feeding
+  # the whole file to `sha256sum -c`. This checks integrity, not provenance: the
+  # sums arrive over the same TLS connection as the zip. It catches a truncated
+  # or corrupted download, not a compromised downloads.rclone.org.
+  expected="$(grep -E "^[0-9a-f]{64}  $asset\$" "$TMP/SHA256SUMS" | awk '{print $1}' || true)"
+  [[ -n "$expected" ]] || die "No checksum for $asset in SHA256SUMS — wrong version or platform?"
+
+  actual="$(sha256_of "$TMP/$asset")"
+  if [[ "$actual" != "$expected" ]]; then
+    die "Checksum mismatch for $asset.
+  expected $expected
+  got      $actual
+Nothing was installed. Delete any partial download and try again."
+  fi
+  echo "  checksum ok"
+
+  have unzip || die "Need unzip to unpack rclone."
+  unzip -q -o "$TMP/$asset" -d "$TMP/x"
+  [[ -f "$TMP/x/rclone-v$want-$OS-$ARCH/rclone" ]] \
+    || die "Archive did not contain the expected rclone binary."
+
+  mkdir -p "$BINDIR"
+  # `install` replaces the file rather than writing through it, so this is safe
+  # even if another shell is running the old binary right now.
+  install -m 755 "$TMP/x/rclone-v$want-$OS-$ARCH/rclone" "$BINDIR/rclone"
+  green "installed  rclone v$want -> ${BINDIR/#$HOME/\~}/rclone"
+}
+
+# ----------------------------------------------------------------- scripts ---
+
+install_scripts() {
+  local name
+  for name in "${SCRIPTS[@]}"; do
+    [[ -f "$SRC/$name" ]] || die "Missing $SRC/$name — run this from a clone of the repo."
+
+    if [[ -f "$BINDIR/$name" ]] && cmp -s "$SRC/$name" "$BINDIR/$name"; then
+      green "ok         $name already current in ${BINDIR/#$HOME/\~}"
+      continue
+    fi
+    if (( DRY )); then
+      if [[ -f "$BINDIR/$name" ]]; then
+        yellow "would update  $name in ${BINDIR/#$HOME/\~}"
+      else
+        yellow "would install $name to ${BINDIR/#$HOME/\~}"
+      fi
+      continue
+    fi
+    mkdir -p "$BINDIR"
+    install -m 755 "$SRC/$name" "$BINDIR/$name"
+    green "installed  $name -> ${BINDIR/#$HOME/\~}/$name"
+  done
+}
+
+# ---------------------------------------------------------------- shell rc ---
+
+setup_shell() {
+  local rc
+  case "${SHELL##*/}" in
+    zsh)  rc="$HOME/.zshrc" ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *)    yellow "skip       unknown shell '${SHELL##*/}' — add $BINDIR to PATH yourself"
+          return 0 ;;
+  esac
+  [[ -f "$rc" ]] || { (( DRY )) || : > "$rc"; }
+
+  ensure_line "$rc" 'export PATH="$HOME/bin:$PATH"' 'PATH entry for ~/bin'
+
+  # zsh does not treat '#' as a comment interactively, so pasted commands with
+  # trailing comments arrive as arguments. This has caused real confusion here.
+  if [[ "${SHELL##*/}" == zsh ]]; then
+    ensure_line "$rc" 'setopt interactive_comments' 'interactive_comments'
+  fi
+
+  case ":$PATH:" in
+    *":$BINDIR:"*) ;;
+    *) note_todo "Open a new shell, or run: export PATH=\"\$HOME/bin:\$PATH\"" ;;
+  esac
+}
+
+# ------------------------------------------------------------------- checks ---
+
+post_checks() {
+  local conf="$HOME/.config/rclone/rclone.conf" perms
+
+  if [[ -f "$conf" ]]; then
+    green "ok         rclone config exists"
+    if have stat; then
+      perms="$(stat -c '%a' "$conf" 2>/dev/null || stat -f '%Lp' "$conf" 2>/dev/null || echo '')"
+      if [[ -n "$perms" && "$perms" != "600" ]]; then
+        yellow "warn       $conf is mode $perms, not 600"
+        note_todo "Tighten the config: chmod 600 $conf"
+      fi
+    fi
+  else
+    yellow "todo       no rclone config yet"
+    note_todo "Configure the remote: rclone config   (see README, Configuration)"
+    note_todo "Then encrypt it: rclone config -> s) Set configuration password"
+  fi
+
+  if [[ ! -d "$HOME/Projects" ]]; then
+    note_todo "Pull your files down: 42sync seed   (only on a fresh machine)"
+  elif [[ ! -f "$HOME/Projects/RCLONE_TEST" ]]; then
+    yellow "warn       ~/Projects exists but has no RCLONE_TEST marker"
+    note_todo "~/Projects has no access marker — read README, Safety mechanisms, before syncing"
+  else
+    green "ok         ~/Projects present with its access marker"
+    note_todo "Create the shortcuts if you have not on this machine: 42links"
+  fi
+}
+
+# --------------------------------------------------------------------- main ---
+
+if (( DRY )); then
+  yellow "Dry run — nothing will be changed."
+  echo
+fi
+echo "Target: $OS-$ARCH, installing into ${BINDIR/#$HOME/\~}"
+echo
+
+install_rclone
+install_scripts
+setup_shell
+post_checks
+
+echo
+if (( DRY )); then
+  yellow "Dry run — nothing was changed."
+else
+  green "Done."
+fi
+
+if (( ${#TODO[@]} )); then
+  echo
+  echo "Still to do on this machine:"
+  printf '  - %s\n' "${TODO[@]}"
+fi

@@ -286,6 +286,32 @@ the filter file (`*.o`, `*.out`, `a.out` are already excluded).
 
 ---
 
+## An `RCLONE_*` variable breaks every rclone command
+
+**Symptom:** rclone fails or prints nothing for no visible reason — including commands
+as trivial as `rclone version`. Tools that shell out to rclone then report it as
+missing or broken.
+
+**Means:** rclone reads any `RCLONE_<FLAG>` variable in the environment as `--<flag>`.
+So `RCLONE_VERSION=1.75.0` becomes `--version=1.75.0`, and because `--version` is a
+boolean flag, every single invocation dies during argument parsing.
+
+This is easy to trip over accidentally, because the namespace looks like an ordinary
+prefix rather than a reserved one. `42install` takes its version pin from
+`INSTALL_RCLONE_VERSION` for exactly this reason.
+
+**Confirm:**
+
+```bash
+env | grep ^RCLONE_
+```
+
+**Fix:** unset or rename whatever is listed. `RCLONE_CONFIG_PASS` is the one member of
+this namespace you might legitimately set — and even then, prefer
+`--password-command` (see README, Known limitations).
+
+---
+
 ## Inline `#` comments end up as arguments
 
 Pasting a command with a trailing `# comment` into zsh passes the comment text as
