@@ -1,6 +1,7 @@
 # Troubleshooting
 
-Every entry here is an error actually hit while setting this up, with what it really meant.
+Every entry here is an error actually hit while setting this up, with what it
+really meant.
 
 ---
 
@@ -14,18 +15,49 @@ ERROR : Bisync aborted. Must run --resync to recover.
 
 **Means:** bisync has no baseline for this exact path pair. Normal on a first run,
 and also after you rename either side — the cached listings in
-`~/.cache/rclone/bisync/` are keyed to the literal paths.
+`~/.local/state/42sync/bisync/` are keyed to the literal paths.
 
 **Fix:** establish the baseline once.
 
 ```bash
 rclone bisync ~/Projects gdrive:_projects_rclone \
+  --workdir ~/.local/state/42sync/bisync \
   --filter-from ~/.config/rclone/projects-filters.txt \
   --check-access --max-delete 25 --links --resync --verbose
 ```
 
+`--workdir` matters: without it rclone uses `~/.cache`, which these machines clear
+between sessions. See "The baseline disappears between sessions" below.
+
 Do this when both sides are small or already identical. See the `--resync` warning
 below before running it on a populated folder.
+
+---
+
+## The baseline disappears between sessions
+
+**Symptom:** a sync succeeds, then hours later — after a logout, lunch, or a reboot —
+the very next run fails with `cannot find prior Path1 or Path2 listings`. Nothing was
+renamed and no run was interrupted.
+
+**Cause:** rclone stores bisync listings in `~/.cache/rclone/bisync/` by default, and
+the campus machines clear `~/.cache` between login sessions.
+
+**Confirm it:**
+
+```bash
+ls -la ~/.cache/
+```
+
+If every directory carries a timestamp from just after your most recent login — with
+nothing older — the whole cache is being wiped, not just rclone's part.
+
+**Fix:** already applied in `42sync`, which passes
+`--workdir ~/.local/state/42sync/bisync`. That location survives logout (verified by
+logs written before a logout still being present after it).
+
+If you run `rclone bisync` by hand, pass the same `--workdir`, otherwise you are
+using a different, empty baseline and will be told to `--resync` again.
 
 ---
 
@@ -196,3 +228,14 @@ arguments, because interactive zsh does not treat `#` as a comment by default.
 ```bash
 setopt interactive_comments   # add to ~/.zshrc if you want them
 ```
+
+---
+
+## A command appears to hang, doing nothing
+
+If it touches the rclone config, it is probably waiting for the config password with
+the prompt hidden. rclone writes that prompt to **stderr**, so any command wrapped in
+`2>/dev/null` blocks silently on invisible input.
+
+Type the password and press Enter. And never suppress stderr on a command that can
+prompt — it converts "asking you something" into "hung for no reason".

@@ -5,6 +5,9 @@ Two-way sync between a 42 Prague campus machine and Google Drive, using
 
 ```
 ~/Projects            <-->   gdrive:_projects_rclone
+  42Prague/                    42Prague/
+    docs/                        docs/
+    repos/                       repos/
 ```
 
 ## Why this exists
@@ -47,6 +50,9 @@ of service URL on a real domain before an OAuth app can be published out of "Tes
 | rclone remote | `gdrive` |
 | Local path | `~/Projects` |
 | Remote path | `gdrive:_projects_rclone` |
+| bisync workdir | `~/.local/state/42sync/bisync` (**not** the default `~/.cache/...`) |
+| Logs | `~/.local/state/42sync/*.log`, newest as `last.log` |
+| Filters | `~/.config/rclone/projects-filters.txt` |
 
 ### The `drive.file` scope — read this before you wonder why a file is missing
 
@@ -62,6 +68,23 @@ The tradeoff was deliberate: `drive.file` is a *non-sensitive* scope, which is w
 this app could be published without going through Google's verification review.
 Switching to full `auth/drive` later would require verification (multi-week) or new
 grants get blocked.
+
+### Where state lives, and why not `~/.cache`
+
+bisync keeps "listings" — its record of what each side looked like last time. Without
+them it cannot tell a change from a difference, and refuses to run.
+
+rclone stores them in `~/.cache/rclone/bisync/` by default. **On these campus
+machines `~/.cache` is emptied between login sessions** — verified by observing that
+every directory in it (fontconfig, mesa_shader_cache, chrome…) carried a timestamp
+from minutes after login, with nothing older surviving.
+
+The effect was a forced `--resync` at the start of every session, which defeats the
+point of two-way sync. `42sync` therefore passes `--workdir` and keeps listings in
+`~/.local/state/42sync/bisync`, which does persist across logouts.
+
+If you ever run `rclone bisync` by hand, pass `--workdir` too, or you will be
+operating on a different (empty) baseline than the script.
 
 ### Publishing status
 

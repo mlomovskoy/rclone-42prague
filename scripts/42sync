@@ -202,7 +202,7 @@ EOF
     [[ -f "$LOCAL/RCLONE_TEST" ]] && green "  access marker present" || yellow "  access marker MISSING"
     echo
     echo "Remote: $REMOTE"
-    rclone size "$REMOTE" --filter-from "$FILTERS" 2>/dev/null || true
+    rclone size "$REMOTE" --filter-from "$FILTERS" || true
     echo
     echo "Baseline: $WORKDIR"
     if ls "$WORKDIR"/*.lst >/dev/null 2>&1; then
