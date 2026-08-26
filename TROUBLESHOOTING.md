@@ -83,7 +83,9 @@ touch ~/Projects/RCLONE_TEST
 ## `Safety abort: too many deletes (>25%)`
 
 **Means:** you renamed or moved directories. bisync compares by path, so
-`repos/repo_old_name_or_path/` → `repos/repo_new_name_or_path/` reads as XXX deletions plus 1 XXX creations.
+`repos/old_name/` → `repos/new_name/` reads as one deletion for every file in the old
+tree plus one creation for every file in the new one. The run that first produced this
+reported 1226 deletions and 1330 creations — 99% of the tree, far past the 25% ceiling.
 
 **Verify first.** In the output, every `File was deleted` line should be an old path
 and every `File is new` line its replacement. If the deletions surprise you, stop
@@ -123,6 +125,70 @@ cat > ~/.config/rclone/projects-filters.txt <<'EOF'
 - **/.cache/**
 EOF
 ```
+
+---
+
+## Excluded files are stranded on Drive forever
+
+**Symptom:** files you have since excluded in the filter file are still on Drive, and no
+sync ever removes them. `rclone rmdirs` then fails on their directories:
+
+```
+ERROR : 42Prague/repos/.../objects: Failed to rmdir: googleapi: Error 403:
+        The user may not have granted the app ... write access to all of the
+        children of file ..., appNotAuthorizedToChild
+ERROR : 42Prague/repos/.../.git: Failed to rmdir: directory not empty
+```
+
+**Means:** two separate things, both permanent.
+
+Filters apply to the **destination** as well as the source. Once `*.out` is excluded,
+`rclone sync` cannot see those files on Drive either — so it will never transfer them
+and never delete them. Anything uploaded before you tightened the filters is now
+invisible to every future run.
+
+`appNotAuthorizedToChild` is the `drive.file` scope: rclone cannot remove a folder that
+holds anything it did not create. Retrying does not help.
+
+**Fix:** delete them from the Drive web UI. You own the files even where the app does
+not have access. Web-side deletion is safe here *only* because these paths exist in
+neither the local tree nor the bisync baseline, so bisync never sees the change — the
+usual "never touch it from the web" rule does not apply to already-orphaned files.
+
+To find them before deciding:
+
+```bash
+rclone ls gdrive:_projects_rclone --include "**/*.out" --include "**/a.out"
+```
+
+**Avoid it next time** by tightening filters *before* a large upload, not after.
+
+---
+
+## `Unauthorized ... is not authorized to write to vogsphere/...`
+
+```
+Gitea: Unauthorized — User <login> ... is not authorized to write to vogsphere/...
+```
+
+**Means:** vogsphere revoked write access because the project has been evaluated. It
+affects your own repos as well as teammate-owned ones, and there is no setting to
+change. This is not an SSH key problem — if the key were wrong you would get a
+permission-denied from ssh, not an authorization message from Gitea.
+
+**Consequence:** any local commits on that repo cannot leave the machine through git.
+`42sync` reports these as `unpushed commits: <repo>` before each run.
+
+**Fix:** push to a remote you control instead.
+
+```bash
+cd ~/Projects/42Prague/repos/<repo>
+git remote add github git@github.com:<your-github-username>/<repo>-history.git
+git push github --all
+```
+
+`--all` matters. A file-level copy into another folder preserves the working tree and
+discards every commit, which for these repos is the half worth keeping.
 
 ---
 

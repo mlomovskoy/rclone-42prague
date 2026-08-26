@@ -20,17 +20,20 @@ That makes the sync load-bearing, not a convenience:
 
 - **Run `42sync` before you leave a seat.** Anything unsynced stays on that machine.
 - **Run `42sync seed` when you sit at a new one.** Never plain `42sync` on an empty folder.
-- **Git is still your durable copy for code.** Push to vogsphere before you leave.
-  Drive mirrors `.git` directories whole, but a mirror is not a remote.
+- **Git is your durable copy for code — where you can still push.** Push to vogsphere
+  before you leave. Drive mirrors `.git` directories whole, but a mirror is not a remote.
+  This advice has an exception worth knowing about: see *Repos you can no longer push*
+  under Known limitations.
 
 ## Layout of this repo
 
 ```
-README.md                  this file
-TROUBLESHOOTING.md         every error hit during setup, and the fix
-scripts/42sync             the sync wrapper (install to ~/bin)
-templates/READ-ME-FIRST.txt  warning file that should be places in ~/Projects
-docs/                      GitHub Pages site (home / privacy / terms)
+README.md                    this file
+TROUBLESHOOTING.md           every error hit during setup, and the fix
+scripts/42sync               the sync wrapper (install to ~/bin)
+scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
+templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
+docs/                        GitHub Pages site (home / privacy / terms)
 ```
 
 `docs/` exists only because Google requires a home page, privacy policy, and terms
@@ -39,8 +42,9 @@ of service URL on a real domain before an OAuth app can be published out of "Tes
 
 ## Configuration
 
-
-|Google Cloud Console | `https://console.cloud.google.com/auth/`|
+| Setting | Value |
+|---|---|
+| Google Cloud Console | `https://console.cloud.google.com/auth/` |
 | Google Cloud project | `<42Prague>` (no organization) |
 | OAuth app name | `rclone-42prague` |
 | User type | External, publishing status **In production** |
@@ -98,9 +102,9 @@ Cost of publishing: an unverified-app warning screen during `rclone config`
 ## First-time setup on a new machine
 
 ```bash
-# 1. Install the script
+# 1. Install the scripts
 mkdir -p ~/bin
-cp scripts/42sync ~/bin/ && chmod +x ~/bin/42sync
+cp scripts/42sync scripts/42links ~/bin/ && chmod +x ~/bin/42sync ~/bin/42links
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 # 2. Configure the remote
@@ -122,6 +126,9 @@ chmod 600 ~/.config/rclone/rclone.conf
 
 # 4. Seed from Drive
 42sync seed
+
+# 5. Create the ~/docs and ~/repos shortcuts
+42links
 ```
 
 `42sync seed` refuses to run against a non-empty `~/Projects`. That is deliberate —
@@ -137,8 +144,26 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync seed      # first run on a fresh machine only
 ```
 
+`42links` maintains `docs` and `repos` shortcuts in `~`, `~/Documents` and `~/Downloads`,
+pointing into the synced tree. They live in `$HOME`, so they are per-machine setup —
+run it once per seat, like `42sync seed` and `rclone config`:
+
+```bash
+42links          # create or refresh the links
+42links check    # dry run, changes nothing
+42links status   # show current state, including broken links
+42links clean    # remove only the links pointing into 42Prague/
+```
+
+Both scripts refuse to touch a real directory sitting where a link would go, and
+`42links` refuses to run at all if a destination resolves inside `~/Projects` — a link
+in there would be mirrored to Drive as a `.rclonelink` holding a per-machine path.
+
 Logs: `~/.local/state/42sync/last.log`
 Filters: `~/.config/rclone/projects-filters.txt` (created on first run, yours to edit)
+
+Do not paste those `#` comments into zsh. Interactive zsh passes them as arguments
+rather than stripping them; `setopt interactive_comments` in `~/.zshrc` fixes it.
 
 ## Safety mechanisms
 
@@ -156,8 +181,10 @@ Second net under the first.
 **`--links`** — stores symlinks as `.rclonelink` files. Without it rclone skips them
 with a NOTICE that is easy to miss, and the file simply never syncs.
 
-**Uncommitted-repo warning** — `42sync` lists repos with uncommitted changes before
-running, because Drive is a mirror and mirrors do not have history.
+**Repo warning** — before running, `42sync` lists repos with uncommitted changes *and*
+repos holding commits that were never pushed, because Drive is a mirror and mirrors do
+not have history. The second list is the one to read carefully: see *Repos you can no
+longer push* below.
 
 ## Known limitations
 
@@ -166,6 +193,28 @@ reads as "every file inside was deleted, and an equal number appeared." The dele
 guard will abort. This is correct behaviour; use `42sync force` and confirm the
 dry run shows matched delete/create pairs. Reorganize *before* a sync, not between
 syncs, when you can.
+
+**Repos you can no longer push.** vogsphere revokes write access once a project has
+been evaluated:
+
+```
+Gitea: Unauthorized — User <login> ... is not authorized to write to vogsphere/...
+```
+
+Nothing on your side fixes this, and it applies to your own repos as well as
+teammate-owned ones. It inverts the rule at the top of this file: for those repos the
+Drive copy of `.git` is the *only* off-machine copy of that history — which is exactly
+what the next entry says not to rely on. `42sync` prints `unpushed commits: <repo>` so
+you at least know which ones. The way out is a second remote you control:
+
+```bash
+cd ~/Projects/42Prague/repos/<repo>
+git remote add github git@github.com:<your-github-username>/<repo>-history.git
+git push github --all
+```
+
+Use `--all`, not a file copy. Copying the working tree preserves the code and loses
+every commit, which for a repo whose value is its history is the wrong half.
 
 **Never sync two machines at once.** Sequential is safe. Parallel produces
 `.conflict` files, and inside a `.git` directory that gets unpleasant.

@@ -86,24 +86,37 @@ This usually means the local folder was wiped or is not the synced one.
 Refusing to sync — inspect it first, then run '42sync seed' on a fresh machine."
 }
 
+# Drive is a mirror, and a mirror has no history. Two things are worth seeing before a
+# run: work not committed at all, and commits that exist only on this machine. The
+# second is the one that bites — vogsphere revokes write access once a project has been
+# evaluated, so "just push it" is not always available. See README, Known limitations.
 check_repos() {
+  local repo dirty ahead
   while IFS= read -r -d '' gitdir; do
     repo="$(dirname "$gitdir")"
-    if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
-      yellow "uncommitted changes: ${repo#$LOCAL/}"
-    fi
+    dirty="$(git -C "$repo" status --porcelain 2>/dev/null)"
+    ahead="$(git -C "$repo" log --oneline '@{u}..HEAD' 2>/dev/null)"
+    [[ -n "$dirty" ]] && yellow "uncommitted changes: ${repo#$LOCAL/}"
+    [[ -n "$ahead" ]] && yellow "unpushed commits ($(printf '%s\n' "$ahead" | wc -l)): ${repo#$LOCAL/}"
   done < <(find "$LOCAL" -type d -name .git -print0 2>/dev/null)
 }
 
 # Run bisync, keep the log, and translate rclone's cryptic failures.
 run_bisync() {
   new_log
+  # Where this run's output starts. 'force' calls run_bisync twice into the same log,
+  # so diagnosing against the whole file would match the dry run's message and report
+  # the wrong cause for the real run's failure.
+  local start=0
+  [[ -f "$LOG" ]] && start=$(wc -c < "$LOG")
   rclone bisync "$LOCAL" "$REMOTE" "$@" 2>&1 | tee -a "$LOG"
   local rc=${PIPESTATUS[0]}
   prune_logs
   if (( rc != 0 )); then
+    local this_run
+    this_run="$(tail -c "+$((start + 1))" "$LOG" 2>/dev/null)"
     echo
-    if grep -q 'cannot find prior Path1 or Path2 listings' "$LOG"; then
+    if grep -q 'cannot find prior Path1 or Path2 listings' <<<"$this_run"; then
       red "No baseline exists for this path pair yet."
       cat <<EOF
 
@@ -122,7 +135,7 @@ That happens when:
 Do NOT run --resync when the two sides genuinely differ: it copies Path2-only
 files down to Path1 first, which resurrects anything you deleted or renamed.
 EOF
-    elif grep -q 'too many deletes' "$LOG"; then
+    elif grep -q 'too many deletes' <<<"$this_run"; then
       red "Delete guard tripped."
       cat <<EOF
 
@@ -133,7 +146,7 @@ mass creation.
 Check the log, then:  42sync force
 Log: $LOG
 EOF
-    elif grep -q 'Access test failed' "$LOG"; then
+    elif grep -q 'Access test failed' <<<"$this_run"; then
       red "Access check failed — the RCLONE_TEST marker is missing on one side."
       echo
       echo "This guard exists to stop an empty local folder from wiping Drive."
@@ -158,6 +171,10 @@ Run '42sync check' first to see what a normal sync would do."
     fi
     new_log
     rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --links --verbose 2>&1 | tee -a "$LOG"
+    # Stop here on a partial pull. Taking a baseline over a half-copied tree records
+    # the missing files as "deleted locally", and the next sync removes them on Drive.
+    (( PIPESTATUS[0] == 0 )) || die "Pull from $REMOTE failed. Log: $LOG
+Nothing was seeded. Fix the error above and run '42sync seed' again."
     touch "$LOCAL/RCLONE_TEST"
     rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
     run_bisync "${COMMON[@]}" --resync
@@ -212,7 +229,12 @@ EOF
     fi
     echo
     echo "Recent runs:"
-    ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | head -5 | sed 's|^|  |' || echo "  (none)"
+    recent="$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | head -5)"
+    if [[ -n "$recent" ]]; then
+      printf '%s\n' "$recent" | sed 's|^|  |'
+    else
+      echo "  (none)"
+    fi
     ;;
 
   logs)

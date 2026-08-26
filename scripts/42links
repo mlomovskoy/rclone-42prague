@@ -21,6 +21,10 @@ set -euo pipefail
 
 BASE="$HOME/Projects/42Prague"
 SYNC_ROOT="$HOME/Projects"
+# Compared below against destinations resolved with `pwd -P`. Resolve this one too:
+# if any component of $HOME is itself a symlink, an unresolved value here would fail
+# to match and the guard would silently pass.
+SYNC_ROOT_REAL="$(cd "$SYNC_ROOT" 2>/dev/null && pwd -P || echo "$SYNC_ROOT")"
 
 # link name -> target under $BASE
 LINK_NAMES=(docs repos)
@@ -41,7 +45,7 @@ DRY=0
 # mirrored to Drive as a .rclonelink pointing at a path that differs per machine.
 for d in "${DIRS[@]}"; do
   case "$(cd "$d" 2>/dev/null && pwd -P || echo "$d")" in
-    "$SYNC_ROOT"|"$SYNC_ROOT"/*)
+    "$SYNC_ROOT_REAL"|"$SYNC_ROOT_REAL"/*)
       die "Refusing to run: $d is inside the synced tree ($SYNC_ROOT)." ;;
   esac
 done
@@ -77,8 +81,12 @@ Run '42sync seed' first, or fix BASE at the top of this script."
         fi
       done
     done
-    [[ $DRY -eq 1 ]] && yellow "
+    # Not `[[ ... ]] && yellow`: on a real run the test fails, that status becomes
+    # the case statement's, and the script exits 1 despite having done its job.
+    if [[ $DRY -eq 1 ]]; then
+      yellow "
 Dry run — nothing was changed."
+    fi
     ;;
 
   clean)
