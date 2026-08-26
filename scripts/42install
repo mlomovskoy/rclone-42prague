@@ -18,6 +18,12 @@
 # --version=1.75.0 on every rclone call — an invalid boolean, which makes even
 # `rclone version` fail.
 #
+# The rclone download is checked against a SHA256 that is itself PGP-verified
+# against rclone's release signing key (bundled alongside this script). This is
+# required: if the signature cannot be checked, nothing is installed. To install
+# on a machine without gpg, opt out explicitly with INSTALL_ALLOW_UNSIGNED=1 —
+# that falls back to the SHA256 alone.
+#
 # This installs tools. It does NOT configure the remote or move any data —
 # `rclone config` and `42sync seed` stay manual because both need decisions
 # only you can make. The summary at the end says which are still outstanding.
@@ -28,8 +34,15 @@ BINDIR="$HOME/bin"
 BASE_URL="https://downloads.rclone.org"
 SCRIPTS=(42sync 42links)
 
+# rclone's release signing key. Cross-checked 2026-08-26 against rclone.org's
+# release_signing page, the same page's source in the rclone git repo, and
+# keys.openpgp.org — all three publish this fingerprint. Re-check it yourself
+# before trusting it; that is the whole point of a pinned fingerprint.
+RCLONE_KEY_FPR="FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA"
+
 # This file's own directory, so the installer works from a clone in any path.
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RCLONE_KEY_FILE="$SRC/rclone-release-key.asc"
 
 red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -133,6 +146,79 @@ ensure_line() {  # file line description
   fi
 }
 
+# Sets EXPECTED_SHA to the signed checksum for $2, or dies.
+#
+# Not a value-returning function on purpose: `die` inside a command substitution
+# would only exit the subshell, and the caller would sail on with an empty
+# checksum — which is precisely the failure this whole function exists to stop.
+EXPECTED_SHA=""
+verify_sums() {  # sumsfile asset
+  local sums="$1" asset="$2" gnupg fpr payload
+
+  EXPECTED_SHA=""
+
+  if ! have gpg || [[ ! -f "$RCLONE_KEY_FILE" ]]; then
+    local why="gpg is not installed"
+    [[ -f "$RCLONE_KEY_FILE" ]] || why="$RCLONE_KEY_FILE is missing"
+
+    # Verified by default. Skipping is a decision with a real consequence, so it
+    # has to be made deliberately rather than fallen into by running on a machine
+    # that happens to lack gpg.
+    if [[ "${INSTALL_ALLOW_UNSIGNED:-0}" != "1" ]]; then
+      die "Cannot verify rclone's signature: $why.
+
+Refusing to install a binary that has not been verified.
+
+  gpg missing        Most Linux and macOS installs have it. Campus machines give
+                     you no admin rights, so if it is genuinely absent you cannot
+                     simply install it — use a machine that has it, or opt out.
+  key file missing   Restore it:  git checkout scripts/rclone-release-key.asc
+
+To install anyway, accepting that only the SHA256 is checked — which catches a
+corrupted download but not a tampered mirror:
+
+  INSTALL_ALLOW_UNSIGNED=1 42install"
+    fi
+    yellow "  warn: signature NOT checked ($why), INSTALL_ALLOW_UNSIGNED=1 is set"
+    echo   "        The SHA256 still catches a corrupted download, but it comes from"
+    echo   "        the same server as the zip — it cannot catch a tampered mirror."
+    EXPECTED_SHA="$(awk -v a="$asset" '''$2 == a {print $1; exit}''' "$sums")"
+    [[ -n "$EXPECTED_SHA" ]] || die "No checksum for $asset in SHA256SUMS — wrong version or platform?"
+    return 0
+  fi
+
+  # A private keyring in the temp dir. Importing into the user'''s ~/.gnupg would be
+  # a side effect they never asked for, and it would outlive this script.
+  gnupg="$TMP/gnupg"
+  rm -rf "$gnupg"; mkdir -p -m 700 "$gnupg"
+  gpg --batch --quiet --homedir "$gnupg" --import "$RCLONE_KEY_FILE" 2>/dev/null \
+    || die "Could not import $RCLONE_KEY_FILE — is it a valid public key?"
+
+  # Trust the pinned fingerprint, not the file: confirm the bundled key is the
+  # key we think it is before letting it vouch for anything.
+  fpr="$(gpg --batch --homedir "$gnupg" --with-colons --fingerprint 2>/dev/null \
+         | awk -F: '''/^fpr:/{print $10; exit}''')"
+  [[ "$fpr" == "$RCLONE_KEY_FPR" ]] || die "Bundled signing key is $fpr,
+but this script pins $RCLONE_KEY_FPR. Refusing to install."
+
+  # `gpg --verify` exits 0 for a good signature from ANY key in the keyring, so
+  # the exit status alone proves nothing. Assert who signed it.
+  gpg --batch --quiet --homedir "$gnupg" --status-fd 3 \
+      --verify "$sums" 3>"$TMP/gpgstatus" 2>/dev/null || true
+  grep -q "^\[GNUPG:\] VALIDSIG $RCLONE_KEY_FPR " "$TMP/gpgstatus" \
+    || die "SHA256SUMS is not validly signed by $RCLONE_KEY_FPR.
+Refusing to install. This is what a tampered or truncated sums file looks like."
+
+  # Read the checksum from gpg'''s output rather than the file. In a clearsigned
+  # file the signature covers only the payload, so unsigned text can sit outside
+  # it — verifying the file and then grepping the file is a classic way to be
+  # fooled by a line the signature never covered.
+  payload="$(gpg --batch --quiet --homedir "$gnupg" --decrypt "$sums" 2>/dev/null)"
+  EXPECTED_SHA="$(awk -v a="$asset" '''$2 == a {print $1; exit}''' <<<"$payload")"
+  [[ -n "$EXPECTED_SHA" ]] || die "No checksum for $asset in the signed SHA256SUMS — wrong version or platform?"
+  echo "  signature ok (signed by $RCLONE_KEY_FPR)"
+}
+
 # ------------------------------------------------------------------ rclone ---
 
 install_rclone() {
@@ -164,8 +250,17 @@ install_rclone() {
   fi
 
   if (( DRY )); then
-    echo "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip, verify its"
-    echo "  SHA256, and install the binary to ${BINDIR/#$HOME/\~}/rclone"
+    echo "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip and install it"
+    echo "  to ${BINDIR/#$HOME/\~}/rclone after checking its SHA256"
+    if have gpg && [[ -f "$RCLONE_KEY_FILE" ]]; then
+      echo "  against a SHA256SUMS verified as signed by $RCLONE_KEY_FPR"
+    elif [[ "${INSTALL_ALLOW_UNSIGNED:-0}" == "1" ]]; then
+      yellow "  WITHOUT a signature check — no gpg or no key file, and"
+      yellow "  INSTALL_ALLOW_UNSIGNED=1 is set"
+    else
+      red    "  it would REFUSE: no gpg or no key file, so the signature cannot be"
+      red    "  checked. See INSTALL_ALLOW_UNSIGNED in the header comment."
+    fi
     return 0
   fi
 
@@ -178,12 +273,8 @@ install_rclone() {
   fetch "$BASE_URL/v$want/SHA256SUMS" "$TMP/SHA256SUMS" \
     || die "Could not fetch SHA256SUMS for v$want — refusing to install unverified."
 
-  # SHA256SUMS is PGP-clearsigned, so pull out the one line rather than feeding
-  # the whole file to `sha256sum -c`. This checks integrity, not provenance: the
-  # sums arrive over the same TLS connection as the zip. It catches a truncated
-  # or corrupted download, not a compromised downloads.rclone.org.
-  expected="$(grep -E "^[0-9a-f]{64}  $asset\$" "$TMP/SHA256SUMS" | awk '{print $1}' || true)"
-  [[ -n "$expected" ]] || die "No checksum for $asset in SHA256SUMS — wrong version or platform?"
+  verify_sums "$TMP/SHA256SUMS" "$asset"
+  expected="$EXPECTED_SHA"
 
   actual="$(sha256_of "$TMP/$asset")"
   if [[ "$actual" != "$expected" ]]; then

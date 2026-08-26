@@ -286,6 +286,60 @@ the filter file (`*.o`, `*.out`, `a.out` are already excluded).
 
 ---
 
+## `SHA256SUMS is not validly signed`
+
+**Means:** `42install` fetched rclone's checksum file, but it was not signed by the key
+this repo pins. Either the download was corrupted or truncated, or something between
+you and `downloads.rclone.org` altered it. Nothing was installed.
+
+**Do not work around this** by skipping the check. Retry first — a truncated fetch on a
+flaky network is the likeliest cause by a wide margin:
+
+```bash
+./scripts/42install force
+```
+
+If it fails again, verify by hand before going further:
+
+```bash
+curl -fsSLO https://downloads.rclone.org/v1.75.0/SHA256SUMS
+gpg --keyserver hkps://keys.openpgp.org \
+    --recv-keys FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA
+gpg --verify SHA256SUMS
+```
+
+A "Good signature" there but a failure in `42install` points at the bundled
+`scripts/rclone-release-key.asc`. A bad signature there too means the problem is
+upstream or on your network, and installing rclone from that source is not safe.
+
+**Related:** `Bundled signing key is <X>, but this script pins <Y>` means
+`scripts/rclone-release-key.asc` is not the key the script expects — it was replaced,
+corrupted, or the pin was edited. Restore it from git.
+
+---
+
+## `Cannot verify rclone's signature: gpg is not installed`
+
+**Means:** `42install` verifies rclone's signature by default and will not install
+without it. Nothing was installed.
+
+**Fix:** use a machine that has `gpg` — most Linux and macOS installs do, and the campus
+machines do. If the key file is what is missing instead, restore it:
+
+```bash
+git checkout scripts/rclone-release-key.asc
+```
+
+If `gpg` is genuinely unavailable and you cannot install it (no admin rights on a campus
+machine), you can proceed with the SHA256 check alone. It catches a corrupted download
+but not a tampered mirror, so decide deliberately:
+
+```bash
+INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
+```
+
+---
+
 ## An `RCLONE_*` variable breaks every rclone command
 
 **Symptom:** rclone fails or prints nothing for no visible reason — including commands

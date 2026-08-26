@@ -31,6 +31,7 @@ That makes the sync load-bearing, not a convenience:
 README.md                    this file
 TROUBLESHOOTING.md           every error hit during setup, and the fix
 scripts/42install            installs the two below, plus rclone itself
+scripts/rclone-release-key.asc  rclone's release signing key, used by 42install
 scripts/42sync               the sync wrapper (install to ~/bin)
 scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
 templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
@@ -135,9 +136,11 @@ chmod 600 ~/.config/rclone/rclone.conf
 
 `42install` ends by printing whichever of steps 2–5 still apply on this machine, so
 you can tell what is left without re-reading this file. It downloads rclone as a plain
-binary into `~/bin` (campus machines give you no admin rights) and verifies its SHA256
-before installing. It deliberately stops short of `rclone config` and `42sync seed` —
-both need decisions it should not make for you.
+binary into `~/bin` (campus machines give you no admin rights), and checks it against a
+SHA256 that has itself been PGP-verified against rclone's release key before installing
+anything — see *Verifying the rclone download* under Security notes. It deliberately
+stops short of `rclone config` and `42sync seed` — both need decisions it should not
+make for you.
 
 Re-run it any time to update the tools. It is idempotent: it only touches what has
 actually changed, and `42install check` shows what it would do without doing it.
@@ -250,3 +253,43 @@ protecting — more than the client secret, which alone cannot reach your data.
 - Revoke access any time at <https://myaccount.google.com/permissions>.
 - The client secret can be rotated in the Cloud console.
 - The app can be un-published back to Testing (which reinstates the 7-day expiry).
+
+### Verifying the rclone download
+
+`42install` fetches a binary over the network and makes it executable, so it verifies
+what it got before trusting it:
+
+1. Downloads the versioned zip and its `SHA256SUMS`, which rclone publishes PGP-clearsigned.
+2. Imports `scripts/rclone-release-key.asc` into a **throwaway keyring** — never your
+   `~/.gnupg` — and refuses to continue unless that key's fingerprint is exactly:
+
+   ```
+   FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA   Nick Craig-Wood <nick@craig-wood.com>
+   ```
+
+3. Verifies the signature and asserts the *signer*. `gpg --verify` exits 0 for a good
+   signature from any key in the keyring, so the exit status alone proves nothing.
+4. Reads the checksum from `gpg --decrypt` output rather than from the file. A
+   clearsigned file's signature covers only the payload, so unsigned lines can sit
+   outside it — verifying the file and then grepping the file is a known way to be
+   fooled.
+5. Compares that checksum against the downloaded zip.
+
+Do not take the fingerprint above on trust from this file alone. Cross-check it against
+<https://rclone.org/release_signing/> and a keyserver; a fingerprint is only worth
+something if you have seen it in more than one place.
+
+Verification is required, not best-effort. If the signature cannot be checked — no
+`gpg`, or a missing or replaced key file — `42install` installs nothing and says why.
+`42install check` tells you in advance whether this machine can verify.
+
+Campus machines give you no admin rights, so if `gpg` really is absent you cannot
+simply install it. To proceed anyway, accepting that only the SHA256 is checked — which
+catches a corrupted download but not a tampered mirror — opt out explicitly:
+
+```bash
+INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
+```
+
+It has to be typed. That is the point: skipping verification should be a decision, not
+something you fall into by running on a machine that happens to lack `gpg`.
