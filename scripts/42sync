@@ -60,11 +60,14 @@ MODE="${1:-sync}"
 # One log per run, newest reachable as last.log. Never clobber history.
 LOG="$LOGDIR/$MODE-$(date +%Y-%m-%d-%H%M%S).log"
 new_log() { ln -sfn "$LOG" "$LOGDIR/last.log"; }
+# Prunes this script's logs only. 42install shares $LOGDIR and prunes its own
+# install-*.log, so neither script deletes the other's evidence.
 prune_logs() {
   local n
-  n=$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | wc -l)
+  n=$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -vE '/(last|install-[^/]*)\.log$' | wc -l)
   if (( n > KEEP_LOGS )); then
-    ls -1t "$LOGDIR"/*.log | grep -v '/last\.log$' | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
+    ls -1t "$LOGDIR"/*.log | grep -vE '/(last|install-[^/]*)\.log$' \
+      | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
   fi
 }
 

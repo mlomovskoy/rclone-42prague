@@ -145,6 +145,13 @@ make for you.
 Re-run it any time to update the tools. It is idempotent: it only touches what has
 actually changed, and `42install check` shows what it would do without doing it.
 
+Every run writes `~/.local/state/42sync/install-<timestamp>.log` — the same directory
+`42sync` uses, so there is one place to look. The log keeps what the terminal does not:
+the exact URLs fetched, `curl`'s own error text (it runs silent), the full gpg output,
+and — when a signature or checksum check fails — the `SHA256SUMS` as received. That
+evidence would otherwise die with the temp directory. Each script prunes only its own
+logs, so neither deletes the other's.
+
 `42sync seed` refuses to run against a non-empty `~/Projects`. That is deliberate —
 it exists to prevent a half-populated folder from being taken as the truth.
 
@@ -173,7 +180,8 @@ Both scripts refuse to touch a real directory sitting where a link would go, and
 `42links` refuses to run at all if a destination resolves inside `~/Projects` — a link
 in there would be mirrored to Drive as a `.rclonelink` holding a per-machine path.
 
-Logs: `~/.local/state/42sync/last.log`
+Logs: `~/.local/state/42sync/last.log` (newest sync; `42sync logs` lists all, including
+`42install`'s `install-*.log`)
 Filters: `~/.config/rclone/projects-filters.txt` (created on first run, yours to edit)
 
 Do not paste those `#` comments into zsh. Interactive zsh passes them as arguments

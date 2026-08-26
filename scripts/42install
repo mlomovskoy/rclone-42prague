@@ -44,10 +44,37 @@ RCLONE_KEY_FPR="FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 RCLONE_KEY_FILE="$SRC/rclone-release-key.asc"
 
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-green()  { printf '\033[32m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-die()    { red "$*" >&2; exit 1; }
+# Same directory 42sync logs to, so there is one place to look. Named
+# install-* so it cannot collide with 42sync's <mode>-<timestamp>.log, and so
+# each script prunes only its own logs.
+LOGDIR="$HOME/.local/state/42sync"
+KEEP_LOGS=20
+LOG="$LOGDIR/install-$(date +%Y-%m-%d-%H%M%S).log"
+mkdir -p "$LOGDIR"
+
+# Colour only on a terminal; the log gets plain text either way.
+if [[ -t 1 ]]; then
+  C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_OFF=$'\033[0m'
+else
+  C_RED=""; C_GRN=""; C_YEL=""; C_OFF=""
+fi
+
+# Logging must never be the thing that breaks an install.
+logmsg() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+
+say()    { printf '%s\n' "$*";                       logmsg "$*"; }
+red()    { printf '%s%s%s\n' "$C_RED" "$*" "$C_OFF"; logmsg "$*"; }
+green()  { printf '%s%s%s\n' "$C_GRN" "$*" "$C_OFF"; logmsg "$*"; }
+yellow() { printf '%s%s%s\n' "$C_YEL" "$*" "$C_OFF"; logmsg "$*"; }
+die()    { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
+
+prune_logs() {
+  local n
+  n=$(ls -1t "$LOGDIR"/install-*.log 2>/dev/null | wc -l)
+  if (( n > KEEP_LOGS )); then
+    ls -1t "$LOGDIR"/install-*.log | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
+  fi
+}
 
 MODE="${1:-install}"
 DRY=0
@@ -85,8 +112,9 @@ esac
 have() { command -v "$1" >/dev/null 2>&1; }
 
 fetch() {  # url dest
-  if   have curl; then curl -fsSL --retry 3 --max-time 300 -o "$2" "$1"
-  elif have wget; then wget -q -O "$2" "$1"
+  logmsg "fetch: $1"
+  if   have curl; then curl -fsSL --retry 3 --max-time 300 -o "$2" "$1" 2>>"$LOG"
+  elif have wget; then wget -q -O "$2" "$1" 2>>"$LOG"
   else die "Need curl or wget to download rclone."
   fi
 }
@@ -117,8 +145,8 @@ detect_rclone() {
   RCLONE_VER="$("$RCLONE_PATH" version 2>/dev/null | head -1 | awk '{print $2}' | sed 's/^v//' || true)"
   if [[ -z "$RCLONE_VER" ]]; then
     yellow "warn       found $RCLONE_PATH but could not read its version"
-    echo   "           A stray RCLONE_* variable in your environment will do this:"
-    echo   "           rclone reads RCLONE_<FLAG> as --<flag>. Check with: env | grep ^RCLONE_"
+    say   "           A stray RCLONE_* variable in your environment will do this:"
+    say   "           rclone reads RCLONE_<FLAG> as --<flag>. Check with: env | grep ^RCLONE_"
   fi
 }
 
@@ -180,8 +208,8 @@ corrupted download but not a tampered mirror:
   INSTALL_ALLOW_UNSIGNED=1 42install"
     fi
     yellow "  warn: signature NOT checked ($why), INSTALL_ALLOW_UNSIGNED=1 is set"
-    echo   "        The SHA256 still catches a corrupted download, but it comes from"
-    echo   "        the same server as the zip — it cannot catch a tampered mirror."
+    say   "        The SHA256 still catches a corrupted download, but it comes from"
+    say   "        the same server as the zip — it cannot catch a tampered mirror."
     EXPECTED_SHA="$(awk -v a="$asset" '''$2 == a {print $1; exit}''' "$sums")"
     [[ -n "$EXPECTED_SHA" ]] || die "No checksum for $asset in SHA256SUMS — wrong version or platform?"
     return 0
@@ -191,7 +219,7 @@ corrupted download but not a tampered mirror:
   # a side effect they never asked for, and it would outlive this script.
   gnupg="$TMP/gnupg"
   rm -rf "$gnupg"; mkdir -p -m 700 "$gnupg"
-  gpg --batch --quiet --homedir "$gnupg" --import "$RCLONE_KEY_FILE" 2>/dev/null \
+  gpg --batch --quiet --homedir "$gnupg" --import "$RCLONE_KEY_FILE" 2>>"$LOG" \
     || die "Could not import $RCLONE_KEY_FILE — is it a valid public key?"
 
   # Trust the pinned fingerprint, not the file: confirm the bundled key is the
@@ -204,10 +232,19 @@ but this script pins $RCLONE_KEY_FPR. Refusing to install."
   # `gpg --verify` exits 0 for a good signature from ANY key in the keyring, so
   # the exit status alone proves nothing. Assert who signed it.
   gpg --batch --quiet --homedir "$gnupg" --status-fd 3 \
-      --verify "$sums" 3>"$TMP/gpgstatus" 2>/dev/null || true
-  grep -q "^\[GNUPG:\] VALIDSIG $RCLONE_KEY_FPR " "$TMP/gpgstatus" \
-    || die "SHA256SUMS is not validly signed by $RCLONE_KEY_FPR.
-Refusing to install. This is what a tampered or truncated sums file looks like."
+      --verify "$sums" 3>"$TMP/gpgstatus" 2>>"$LOG" || true
+  if ! grep -q "^\[GNUPG:\] VALIDSIG $RCLONE_KEY_FPR " "$TMP/gpgstatus"; then
+    # $TMP is wiped on exit, so copy the evidence somewhere that outlives it.
+    logmsg "--- gpg status output ---"
+    cat "$TMP/gpgstatus" >> "$LOG" 2>/dev/null || true
+    logmsg "--- SHA256SUMS as received (first 40 lines) ---"
+    head -40 "$sums" >> "$LOG" 2>/dev/null || true
+    logmsg "--- end evidence ---"
+    die "SHA256SUMS is not validly signed by $RCLONE_KEY_FPR.
+Refusing to install. This is what a tampered or truncated sums file looks like.
+The signature output and the file as received were kept in:
+  $LOG"
+  fi
 
   # Read the checksum from gpg'''s output rather than the file. In a clearsigned
   # file the signature covers only the payload, so unsigned text can sit outside
@@ -216,7 +253,7 @@ Refusing to install. This is what a tampered or truncated sums file looks like."
   payload="$(gpg --batch --quiet --homedir "$gnupg" --decrypt "$sums" 2>/dev/null)"
   EXPECTED_SHA="$(awk -v a="$asset" '''$2 == a {print $1; exit}''' <<<"$payload")"
   [[ -n "$EXPECTED_SHA" ]] || die "No checksum for $asset in the signed SHA256SUMS — wrong version or platform?"
-  echo "  signature ok (signed by $RCLONE_KEY_FPR)"
+  say "  signature ok (signed by $RCLONE_KEY_FPR)"
 }
 
 # ------------------------------------------------------------------ rclone ---
@@ -250,10 +287,10 @@ install_rclone() {
   fi
 
   if (( DRY )); then
-    echo "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip and install it"
-    echo "  to ${BINDIR/#$HOME/\~}/rclone after checking its SHA256"
+    say "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip and install it"
+    say "  to ${BINDIR/#$HOME/\~}/rclone after checking its SHA256"
     if have gpg && [[ -f "$RCLONE_KEY_FILE" ]]; then
-      echo "  against a SHA256SUMS verified as signed by $RCLONE_KEY_FPR"
+      say "  against a SHA256SUMS verified as signed by $RCLONE_KEY_FPR"
     elif [[ "${INSTALL_ALLOW_UNSIGNED:-0}" == "1" ]]; then
       yellow "  WITHOUT a signature check — no gpg or no key file, and"
       yellow "  INSTALL_ALLOW_UNSIGNED=1 is set"
@@ -268,7 +305,7 @@ install_rclone() {
   asset="rclone-v$want-$OS-$ARCH.zip"
   url="$BASE_URL/v$want/$asset"
 
-  echo "  downloading $asset"
+  say "  downloading $asset"
   fetch "$url" "$TMP/$asset" || die "Download failed: $url"
   fetch "$BASE_URL/v$want/SHA256SUMS" "$TMP/SHA256SUMS" \
     || die "Could not fetch SHA256SUMS for v$want — refusing to install unverified."
@@ -278,12 +315,13 @@ install_rclone() {
 
   actual="$(sha256_of "$TMP/$asset")"
   if [[ "$actual" != "$expected" ]]; then
+    logmsg "checksum expected=$expected actual=$actual asset=$asset"
     die "Checksum mismatch for $asset.
   expected $expected
   got      $actual
 Nothing was installed. Delete any partial download and try again."
   fi
-  echo "  checksum ok"
+  say "  checksum ok"
 
   have unzip || die "Need unzip to unpack rclone."
   unzip -q -o "$TMP/$asset" -d "$TMP/x"
@@ -381,11 +419,14 @@ post_checks() {
 
 # --------------------------------------------------------------------- main ---
 
+logmsg "=== 42install $(date '+%F %T') mode=$MODE host=$(uname -n) ==="
+logmsg "target=$OS-$ARCH bindir=$BINDIR src=$SRC"
+
 if (( DRY )); then
   yellow "Dry run — nothing will be changed."
   echo
 fi
-echo "Target: $OS-$ARCH, installing into ${BINDIR/#$HOME/\~}"
+say "Target: $OS-$ARCH, installing into ${BINDIR/#$HOME/\~}"
 echo
 
 install_rclone
@@ -402,6 +443,11 @@ fi
 
 if (( ${#TODO[@]} )); then
   echo
-  echo "Still to do on this machine:"
+  say "Still to do on this machine:"
   printf '  - %s\n' "${TODO[@]}"
+  printf '  - %s\n' "${TODO[@]}" >> "$LOG" 2>/dev/null || true
 fi
+
+logmsg "RESULT: ok"
+prune_logs
+green "Log: $LOG"
