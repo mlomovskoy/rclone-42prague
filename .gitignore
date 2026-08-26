@@ -12,9 +12,9 @@ client_secret*.json
 *token*.json
 
 # ---- private key material: NEVER commit these ----
-# The 2026-05 leak was .ssh/id_rsa, committed by an unfiltered `git add .` run in
-# a folder that also held dotfiles. Note that *.key and *.pem below do NOT match
-# an extensionless SSH key, which is why these rules exist separately.
+# The *.key and *.pem rules further down do NOT match an extensionless SSH key
+# such as id_rsa — which is exactly how private keys end up committed by an
+# unfiltered `git add .` in a directory that also holds dotfiles. Hence these.
 .ssh/
 id_rsa
 id_dsa
