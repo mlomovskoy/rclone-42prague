@@ -4,6 +4,7 @@
 #
 #   42sync           normal run: two-way sync
 #   42sync check     dry run: show what WOULD change, touch nothing
+#   42sync verify    compare real content: is everything local actually on Drive?
 #   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
 #   42sync seed      first time on a NEW machine: pull from Drive, then set the baseline
 #   42sync status    local size, remote size, recent runs
@@ -190,6 +191,66 @@ Nothing was seeded. Fix the error above and run '42sync seed' again."
     green "Dry run only — nothing was changed."
     ;;
 
+  # 'check' asks bisync what it would do, which it answers from its baseline.
+  # 'verify' ignores the baseline and compares actual content, so it can catch
+  # the case a baseline cannot: both sides agreeing on a record that is wrong.
+  # Deliberately does not reuse COMMON — --workdir, --check-access and
+  # --max-delete are bisync flags, and `rclone check` rejects them.
+  verify)
+    require_local
+    new_log
+    yellow "Verifying that every local file exists on Drive ..."
+    cat <<'EOF'
+This reads both sides in full, so it takes a while. It is read-only — safe to
+interrupt, and safe to run while you are doing something else.
+
+--one-way: files that exist only on Drive are not reported. Excluded files (see
+the filter file) are invisible to it on both sides, in both directions.
+EOF
+    echo
+    miss="$(mktemp)"
+    rclone check "$LOCAL" "$REMOTE" \
+      --filter-from "$FILTERS" \
+      --links \
+      --one-way \
+      --missing-on-dst "$miss" \
+      --verbose 2>&1 | tee -a "$LOG"
+    rc=${PIPESTATUS[0]}
+    prune_logs
+    if (( rc == 0 )); then
+      rm -f "$miss"
+      green "Verified — every local file is on Drive, with matching content."
+      green "Log: $LOG"
+    else
+      echo
+      red "Verification FAILED — local files are missing from Drive, or differ."
+      if [[ -s "$miss" ]]; then
+        n=$(wc -l < "$miss")
+        echo
+        yellow "$n file(s) missing on Drive:"
+        head -20 "$miss" | sed 's/^/  /'
+        if (( n > 20 )); then echo "  ... and $((n - 20)) more — full list in the log"; fi
+        { echo "--- missing on Drive ---"; cat "$miss"; } >> "$LOG"
+      fi
+      rm -f "$miss"
+      cat <<EOF
+
+Most often this just means you have edited something since the last sync:
+
+  42sync check     see what it would send
+  42sync           send it
+  42sync verify    confirm it landed
+
+If '42sync check' reports "No changes found" while this still fails, then the
+baseline agrees with neither side and is the thing that is wrong. Read the
+--resync warning in TROUBLESHOOTING.md before reaching for it.
+
+Log: $LOG
+EOF
+      exit "$rc"
+    fi
+    ;;
+
   force)
     require_local
     warn_no_multiplexer
@@ -253,6 +314,6 @@ EOF
     ;;
 
   *)
-    die "Usage: 42sync [sync|check|force|seed|status|logs]"
+    die "Usage: 42sync [sync|check|verify|force|seed|status|logs]"
     ;;
 esac

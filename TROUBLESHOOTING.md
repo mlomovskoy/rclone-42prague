@@ -286,6 +286,44 @@ the filter file (`*.o`, `*.out`, `a.out` are already excluded).
 
 ---
 
+## `42sync check` is clean but `42sync verify` fails
+
+**Means:** bisync's baseline agrees with neither side. `check` compares against that
+stored record and sees nothing to do; `verify` compares real content and finds files
+missing on Drive. When they disagree, the baseline is what is wrong — not your files.
+
+This is the state an interrupted run leaves: the data work finished, the listings were
+never written, or were written from a tree that no longer matches.
+
+**Fix:** make the two sides genuinely agree first, then rebuild the record.
+
+```bash
+42sync verify           # note exactly what is missing
+42sync                  # a normal sync usually resolves it
+42sync verify           # confirm
+```
+
+If `verify` still fails after a successful sync, push local up one-way and re-baseline —
+in that order, and only once you are certain local is the copy you want to keep:
+
+```bash
+tmux new -s sync
+rclone sync ~/Projects gdrive:_projects_rclone \
+  --filter-from ~/.config/rclone/projects-filters.txt \
+  --links --verbose 2>&1 | tee ~/.local/state/42sync/mirror-$(date +%F-%H%M).log
+
+rclone bisync ~/Projects gdrive:_projects_rclone \
+  --workdir ~/.local/state/42sync/bisync \
+  --filter-from ~/.config/rclone/projects-filters.txt \
+  --check-access --max-delete 25 --links --resync --verbose
+```
+
+`rclone sync` is one-way and idempotent, so an interruption costs nothing — unlike the
+`--resync` that follows it. Do the mirror first: it makes both sides identical, which is
+the only state in which `--resync` cannot resurrect anything you deleted.
+
+---
+
 ## `SHA256SUMS is not validly signed`
 
 **Means:** `42install` fetched rclone's checksum file, but it was not signed by the key

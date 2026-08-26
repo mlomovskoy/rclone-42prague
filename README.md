@@ -160,10 +160,29 @@ it exists to prevent a half-populated folder from being taken as the truth.
 ```bash
 42sync           # two-way sync -- sitting down, and before leaving
 42sync check     # dry run, changes nothing
+42sync verify    # compare real content: is everything local actually on Drive?
 42sync status    # local size, remote size, last run
 42sync force     # push a directory rename through (asks twice)
 42sync seed      # first run on a fresh machine only
 ```
+
+### `check` and `verify` answer different questions
+
+`42sync check` asks bisync what it would do, and bisync answers from its
+**baseline** — its stored record of what both sides looked like last time. That is
+what you want before a sync.
+
+`42sync verify` ignores the baseline and compares **actual content**, hash by hash. It
+is the one that answers "is my work really backed up", and it can catch the failure a
+baseline structurally cannot: both sides agreeing on a record that is itself wrong,
+which is what an interrupted run can leave behind.
+
+Run `verify` when it matters — before wiping a machine, after any interrupted sync, or
+whenever you want to stop wondering. It is read-only and safe to interrupt; it reads
+both sides in full, so it is not fast.
+
+If `check` says "No changes found" but `verify` fails, the baseline is the thing that
+is wrong — see TROUBLESHOOTING.md before reaching for `--resync`.
 
 `42links` maintains `docs` and `repos` shortcuts in `~`, `~/Documents` and `~/Downloads`,
 pointing into the synced tree. They live in `$HOME`, so they are per-machine setup —
