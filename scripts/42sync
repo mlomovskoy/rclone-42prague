@@ -17,9 +17,12 @@ LOCAL="$HOME/Projects"
 REMOTE="gdrive:_projects_rclone"
 FILTERS="$HOME/.config/rclone/projects-filters.txt"
 LOGDIR="$HOME/.local/state/42sync"
+# bisync's listings live here, NOT in ~/.cache — campus machines clear the cache
+# between sessions, and losing the listings means a forced --resync every time.
+WORKDIR="$HOME/.local/state/42sync/bisync"
 KEEP_LOGS=20
 
-mkdir -p "$LOGDIR" "$(dirname "$FILTERS")"
+mkdir -p "$LOGDIR" "$WORKDIR" "$(dirname "$FILTERS")"
 
 if [[ ! -f "$FILTERS" ]]; then
   cat > "$FILTERS" <<'EOF'
@@ -39,6 +42,7 @@ fi
 # --max-delete    aborts if >25% of files would vanish ('force' bypasses this).
 # --links         stores symlinks as .rclonelink files instead of skipping them.
 COMMON=(
+  --workdir "$WORKDIR"
   --filter-from "$FILTERS"
   --check-access
   --max-delete 25
@@ -111,6 +115,7 @@ That happens when:
 
   Fresh machine, empty local folder   ->  42sync seed
   Both sides already agree            ->  rclone bisync "$LOCAL" "$REMOTE" \\
+                                            --workdir "$WORKDIR" \\
                                             --filter-from "$FILTERS" \\
                                             --check-access --max-delete 25 --links --resync
 
@@ -198,6 +203,13 @@ EOF
     echo
     echo "Remote: $REMOTE"
     rclone size "$REMOTE" --filter-from "$FILTERS" 2>/dev/null || true
+    echo
+    echo "Baseline: $WORKDIR"
+    if ls "$WORKDIR"/*.lst >/dev/null 2>&1; then
+      green "  present ($(ls -1 "$WORKDIR"/*.lst 2>/dev/null | wc -l) listing files)"
+    else
+      yellow "  MISSING — next run needs --resync"
+    fi
     echo
     echo "Recent runs:"
     ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | head -5 | sed 's|^|  |' || echo "  (none)"
