@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# 42links — create convenience symlinks to the synced 42 folders.
+#
+#   42links           create/refresh the links
+#   42links check     show what would happen, change nothing
+#   42links clean     remove links this script created
+#   42links status    show current state
+#
+# Creates, in $HOME, $HOME/Documents and $HOME/Downloads:
+#
+#   docs   -> ~/Projects/42Prague/docs     (subjects, PDFs, resources)
+#   repos  -> ~/Projects/42Prague/repos    (project repositories)
+#
+# Per-machine setup: campus homes are local, so run this once per seat,
+# alongside installing 42sync and running rclone config.
+#
+# Install:  mkdir -p ~/bin && cp 42links ~/bin/ && chmod +x ~/bin/42links
+
+set -euo pipefail
+
+BASE="$HOME/Projects/42Prague"
+SYNC_ROOT="$HOME/Projects"
+
+# link name -> target under $BASE
+LINK_NAMES=(docs repos)
+
+# where to place them
+DIRS=("$HOME" "$HOME/Documents" "$HOME/Downloads")
+
+red()   { printf '\033[31m%s\033[0m\n' "$*"; }
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
+die()   { red "$*" >&2; exit 1; }
+
+MODE="${1:-create}"
+DRY=0
+[[ "$MODE" == "check" ]] && { MODE=create; DRY=1; }
+
+# Never place a link inside the synced tree: with rclone's --links it would be
+# mirrored to Drive as a .rclonelink pointing at a path that differs per machine.
+for d in "${DIRS[@]}"; do
+  case "$(cd "$d" 2>/dev/null && pwd -P || echo "$d")" in
+    "$SYNC_ROOT"|"$SYNC_ROOT"/*)
+      die "Refusing to run: $d is inside the synced tree ($SYNC_ROOT)." ;;
+  esac
+done
+
+case "$MODE" in
+
+  create)
+    [[ -d "$BASE" ]] || die "Target missing: $BASE
+Run '42sync seed' first, or fix BASE at the top of this script."
+
+    for name in "${LINK_NAMES[@]}"; do
+      target="$BASE/$name"
+      if [[ ! -d "$target" ]]; then
+        yellow "skip     $name  (no such directory: $target)"
+        continue
+      fi
+      for d in "${DIRS[@]}"; do
+        [[ $DRY -eq 1 ]] || mkdir -p "$d"
+        link="$d/$name"
+        if [[ -L "$link" ]]; then
+          current="$(readlink "$link")"
+          if [[ "$current" == "$target" ]]; then
+            green "ok       $link"
+          else
+            [[ $DRY -eq 1 ]] || ln -sfn "$target" "$link"
+            green "repoint  $link  (was -> $current)"
+          fi
+        elif [[ -e "$link" ]]; then
+          yellow "SKIPPED  $link  (exists and is not a symlink — left untouched)"
+        else
+          [[ $DRY -eq 1 ]] || ln -s "$target" "$link"
+          green "created  $link"
+        fi
+      done
+    done
+    [[ $DRY -eq 1 ]] && yellow "
+Dry run — nothing was changed."
+    ;;
+
+  clean)
+    for name in "${LINK_NAMES[@]}"; do
+      for d in "${DIRS[@]}"; do
+        link="$d/$name"
+        if [[ -L "$link" ]]; then
+          current="$(readlink "$link")"
+          case "$current" in
+            "$BASE"/*|"$BASE")
+              rm "$link"; green "removed  $link" ;;
+            *)
+              yellow "kept     $link  (points outside $BASE -> $current)" ;;
+          esac
+        fi
+      done
+    done
+    ;;
+
+  status)
+    echo "Base: $BASE"
+    [[ -d "$BASE" ]] || yellow "  (missing)"
+    echo
+    for name in "${LINK_NAMES[@]}"; do
+      for d in "${DIRS[@]}"; do
+        link="$d/$name"
+        if [[ -L "$link" ]]; then
+          if [[ -e "$link" ]]; then
+            green   "ok       $link -> $(readlink "$link")"
+          else
+            red     "BROKEN   $link -> $(readlink "$link")"
+          fi
+        elif [[ -e "$link" ]]; then
+          yellow    "real dir $link  (not a symlink)"
+        else
+          echo      "absent   $link"
+        fi
+      done
+    done
+    ;;
+
+  *)
+    die "Usage: 42links [create|check|clean|status]"
+    ;;
+esac

@@ -2,25 +2,25 @@
 #
 # 42sync — two-way sync of ~/Projects with gdrive:_projects_rclone via rclone bisync.
 #
-#   42sync seed     first time on a NEW machine: pull from Drive, then establish baseline
-#   42sync          normal run: two-way sync
-#   42sync check    dry run: show what WOULD change, touch nothing
-#   42sync status   show local size and last sync time
+#   42sync           normal run: two-way sync
+#   42sync check     dry run: show what WOULD change, touch nothing
+#   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
+#   42sync seed      first time on a NEW machine: pull from Drive, then set the baseline
+#   42sync status    local size, remote size, recent runs
+#   42sync logs      list kept logs
 #
 # Install:  mkdir -p ~/bin && cp 42sync ~/bin/ && chmod +x ~/bin/42sync
-#           (make sure ~/bin is on your PATH)
 
-set -euo pipefail
+set -uo pipefail
 
 LOCAL="$HOME/Projects"
 REMOTE="gdrive:_projects_rclone"
 FILTERS="$HOME/.config/rclone/projects-filters.txt"
 LOGDIR="$HOME/.local/state/42sync"
-LOG="$LOGDIR/last.log"
+KEEP_LOGS=20
 
 mkdir -p "$LOGDIR" "$(dirname "$FILTERS")"
 
-# Filter file: created once, edit it freely afterwards.
 if [[ ! -f "$FILTERS" ]]; then
   cat > "$FILTERS" <<'EOF'
 # Excluded from sync. Lines starting with "- " are excludes.
@@ -28,76 +28,194 @@ if [[ ! -f "$FILTERS" ]]; then
 - .DS_Store
 - .Trash-*/**
 - **/*.o
+- **/*.out
+- a.out
 - **/.cache/**
 EOF
   echo "Created filter file: $FILTERS"
 fi
 
-# Safety flags:
-#   --check-access  refuses to run unless RCLONE_TEST marker files are present on BOTH
-#                   sides. This is what stops a wiped local home from deleting Drive.
-#   --max-delete    aborts if more than 25% of files would be deleted.
+# --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
+# --max-delete    aborts if >25% of files would vanish ('force' bypasses this).
+# --links         stores symlinks as .rclonelink files instead of skipping them.
 COMMON=(
   --filter-from "$FILTERS"
   --check-access
   --max-delete 25
+  --links
   --verbose
 )
 
-die() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-ok()  { printf '\n\033[32m%s\033[0m\n' "$*"; }
+red()    { printf '\033[31m%s\033[0m\n' "$*"; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
+die()    { red "$*" >&2; exit 1; }
 
-case "${1:-sync}" in
+MODE="${1:-sync}"
+
+# One log per run, newest reachable as last.log. Never clobber history.
+LOG="$LOGDIR/$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+new_log() { ln -sfn "$LOG" "$LOGDIR/last.log"; }
+prune_logs() {
+  local n
+  n=$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | wc -l)
+  if (( n > KEEP_LOGS )); then
+    ls -1t "$LOGDIR"/*.log | grep -v '/last\.log$' | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
+  fi
+}
+
+# Long runs die with the terminal. Say so before, not after.
+warn_no_multiplexer() {
+  [[ -n "${TMUX:-}${STY:-}" ]] && return 0
+  yellow "Not running inside tmux or screen."
+  echo   "A large sync can take many minutes; closing this terminal kills it mid-run."
+  echo   "Safer:  tmux new -s sync   then re-run this command inside it."
+  echo
+  read -r -p "Continue anyway? [y/N] " a || true
+  [[ "$a" == [yY] ]] || die "Aborted."
+}
+
+require_local() {
+  [[ -d "$LOCAL" ]] || die "$LOCAL does not exist. On a new machine run: 42sync seed"
+  [[ -f "$LOCAL/RCLONE_TEST" ]] || die "Access marker missing from $LOCAL.
+This usually means the local folder was wiped or is not the synced one.
+Refusing to sync — inspect it first, then run '42sync seed' on a fresh machine."
+}
+
+check_repos() {
+  while IFS= read -r -d '' gitdir; do
+    repo="$(dirname "$gitdir")"
+    if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
+      yellow "uncommitted changes: ${repo#$LOCAL/}"
+    fi
+  done < <(find "$LOCAL" -type d -name .git -print0 2>/dev/null)
+}
+
+# Run bisync, keep the log, and translate rclone's cryptic failures.
+run_bisync() {
+  new_log
+  rclone bisync "$LOCAL" "$REMOTE" "$@" 2>&1 | tee -a "$LOG"
+  local rc=${PIPESTATUS[0]}
+  prune_logs
+  if (( rc != 0 )); then
+    echo
+    if grep -q 'cannot find prior Path1 or Path2 listings' "$LOG"; then
+      red "No baseline exists for this path pair yet."
+      cat <<EOF
+
+bisync needs a starting point before it can tell changes from differences.
+That happens when:
+  - this is the first run on this machine, or
+  - either path was renamed (the cache is keyed to exact paths), or
+  - a previous run was interrupted before it wrote its listings.
+
+  Fresh machine, empty local folder   ->  42sync seed
+  Both sides already agree            ->  rclone bisync "$LOCAL" "$REMOTE" \\
+                                            --filter-from "$FILTERS" \\
+                                            --check-access --max-delete 25 --links --resync
+
+Do NOT run --resync when the two sides genuinely differ: it copies Path2-only
+files down to Path1 first, which resurrects anything you deleted or renamed.
+EOF
+    elif grep -q 'too many deletes' "$LOG"; then
+      red "Delete guard tripped."
+      cat <<EOF
+
+More than 25% of files would be removed. Usually this means you renamed or moved
+directories — bisync compares by path, so a rename reads as mass deletion plus
+mass creation.
+
+Check the log, then:  42sync force
+Log: $LOG
+EOF
+    elif grep -q 'Access test failed' "$LOG"; then
+      red "Access check failed — the RCLONE_TEST marker is missing on one side."
+      echo
+      echo "This guard exists to stop an empty local folder from wiping Drive."
+      echo "Find out why it is gone before working around it."
+    fi
+    echo
+    red "Failed. Log: $LOG"
+    exit "$rc"
+  fi
+  green "Log: $LOG"
+}
+
+case "$MODE" in
 
   seed)
+    warn_no_multiplexer
     echo "Seeding $LOCAL from $REMOTE ..."
     mkdir -p "$LOCAL"
     if [[ -n "$(ls -A "$LOCAL" 2>/dev/null)" ]]; then
       die "$LOCAL is not empty. 'seed' is only for a fresh machine.
 Run '42sync check' first to see what a normal sync would do."
     fi
-    rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --verbose
-    # Access markers must exist on both sides for --check-access to work.
+    new_log
+    rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --links --verbose 2>&1 | tee -a "$LOG"
     touch "$LOCAL/RCLONE_TEST"
     rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
-    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" --resync 2>&1 | tee "$LOG"
-    ok "Seeded. From now on just run: 42sync"
+    run_bisync "${COMMON[@]}" --resync
+    green "Seeded. From now on just run: 42sync"
     ;;
 
   check)
-    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" --dry-run 2>&1 | tee "$LOG"
-    ok "Dry run only — nothing was changed."
+    require_local
+    run_bisync "${COMMON[@]}" --dry-run
+    green "Dry run only — nothing was changed."
+    ;;
+
+  force)
+    require_local
+    warn_no_multiplexer
+    yellow "FORCE MODE"
+    cat <<'EOF'
+Use this only when bisync aborted with "too many deletes" because YOU renamed or
+moved directories. bisync compares by path, so a rename looks like mass deletion
+plus mass creation — the guard is doing its job, and force tells it to proceed.
+
+Do NOT use force if the deletions surprise you. Investigate instead.
+
+A dry run follows. Check that every "File was deleted" line is an OLD path you
+renamed, and every "File is new" line is its replacement.
+EOF
+    echo
+    read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
+    run_bisync "${COMMON[@]}" --force --dry-run
+    echo
+    yellow "Above is what WOULD happen. Nothing has changed yet."
+    read -r -p "Type FORCE to apply it for real: " reply || true
+    [[ "$reply" == "FORCE" ]] || die "Aborted — nothing was changed."
+    check_repos
+    run_bisync "${COMMON[@]}" --force
+    green "Forced sync complete. Normal '42sync' works again from here."
     ;;
 
   status)
     echo "Local:  $LOCAL"
     du -sh "$LOCAL" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
+    [[ -f "$LOCAL/RCLONE_TEST" ]] && green "  access marker present" || yellow "  access marker MISSING"
+    echo
     echo "Remote: $REMOTE"
     rclone size "$REMOTE" --filter-from "$FILTERS" 2>/dev/null || true
     echo
-    echo "Last sync log: $LOG"
-    [[ -f "$LOG" ]] && tail -3 "$LOG"
+    echo "Recent runs:"
+    ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | head -5 | sed 's|^|  |' || echo "  (none)"
+    ;;
+
+  logs)
+    ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' || echo "(no logs yet)"
     ;;
 
   sync)
-    [[ -d "$LOCAL" ]] || die "$LOCAL does not exist. On a new machine run: 42sync seed"
-    [[ -f "$LOCAL/RCLONE_TEST" ]] || die "Access marker missing from $LOCAL.
-This usually means the local folder was wiped or is not the synced one.
-Refusing to sync — inspect it first, then run '42sync seed' on a fresh machine."
-
-    # Warn about uncommitted work: Drive is a mirror, not a substitute for git.
-    while IFS= read -r -d '' gitdir; do
-      repo="$(dirname "$gitdir")"
-      if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
-        printf '\033[33muncommitted changes: %s\033[0m\n' "${repo#$LOCAL/}"
-      fi
-    done < <(find "$LOCAL" -type d -name .git -print0 2>/dev/null)
-
-    rclone bisync "$LOCAL" "$REMOTE" "${COMMON[@]}" 2>&1 | tee "$LOG"
-    ok "Synced. Log: $LOG"
+    require_local
+    warn_no_multiplexer
+    check_repos
+    run_bisync "${COMMON[@]}"
+    green "Synced."
     ;;
 
   *)
-    die "Usage: 42sync [seed|sync|check|status]"
+    die "Usage: 42sync [sync|check|force|seed|status|logs]"
     ;;
 esac
