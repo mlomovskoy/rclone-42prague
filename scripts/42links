@@ -12,8 +12,8 @@
 #   docs   -> ~/Projects/42Prague/docs     (subjects, PDFs, resources)
 #   repos  -> ~/Projects/42Prague/repos    (project repositories)
 #
-# Per-machine setup: campus homes are local, so run this once per seat,
-# alongside installing 42sync and running rclone config.
+# These live in $HOME, which on a campus machine is a per-user volume that follows
+# you between seats — so this is once per home volume, not once per seat.
 #
 # Install:  mkdir -p ~/bin && cp 42links ~/bin/ && chmod +x ~/bin/42links
 

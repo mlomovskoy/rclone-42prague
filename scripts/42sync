@@ -6,7 +6,7 @@
 #   42sync check     dry run: show what WOULD change, touch nothing
 #   42sync verify    compare real content: is everything local actually on Drive?
 #   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
-#   42sync seed      first time on a NEW machine: pull from Drive, then set the baseline
+#   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
 #   42sync status    local size, remote size, recent runs
 #   42sync logs      list kept logs
 #
@@ -84,10 +84,13 @@ warn_no_multiplexer() {
 }
 
 require_local() {
-  [[ -d "$LOCAL" ]] || die "$LOCAL does not exist. On a new machine run: 42sync seed"
+  [[ -d "$LOCAL" ]] || die "$LOCAL does not exist.
+On a campus seat your home follows you, so this is unexpected — check you are the
+right user before assuming a fresh start. If it really is empty: 42sync seed"
   [[ -f "$LOCAL/RCLONE_TEST" ]] || die "Access marker missing from $LOCAL.
 This usually means the local folder was wiped or is not the synced one.
-Refusing to sync — inspect it first, then run '42sync seed' on a fresh machine."
+Refusing to sync — inspect it first. Only run '42sync seed' if ~/Projects is
+genuinely empty and you accept Drive as the source of truth."
 }
 
 # Drive is a mirror, and a mirror has no history. Two things are worth seeing before a
@@ -130,7 +133,7 @@ That happens when:
   - either path was renamed (the cache is keyed to exact paths), or
   - a previous run was interrupted before it wrote its listings.
 
-  Fresh machine, empty local folder   ->  42sync seed
+  ~/Projects empty, Drive is truth    ->  42sync seed
   Both sides already agree            ->  rclone bisync "$LOCAL" "$REMOTE" \\
                                             --workdir "$WORKDIR" \\
                                             --filter-from "$FILTERS" \\
@@ -170,7 +173,7 @@ case "$MODE" in
     echo "Seeding $LOCAL from $REMOTE ..."
     mkdir -p "$LOCAL"
     if [[ -n "$(ls -A "$LOCAL" 2>/dev/null)" ]]; then
-      die "$LOCAL is not empty. 'seed' is only for a fresh machine.
+      die "$LOCAL is not empty. 'seed' only runs against an empty folder.
 Run '42sync check' first to see what a normal sync would do."
     fi
     new_log

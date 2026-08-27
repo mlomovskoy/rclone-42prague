@@ -12,16 +12,38 @@ Two-way sync between a 42 Prague campus machine and Google Drive, using
 
 ## Why this exists
 
-42 Prague cluster machines run Ubuntu with **local home directories**. `/home` is
-part of the machine's own root filesystem, not a network mount — so your files do
-not follow you to another seat. Drive is the thing that travels.
+Your home directory **does follow you between seats**. It is a per-user volume
+attached at login — on a campus machine it shows up as its own device mounted at
+`/home/<login>`:
 
-That makes the sync load-bearing, not a convenience:
+```
+df -h /home    ->  /dev/mapper/ubuntu--vg-ubuntu--lv--root   /     # the root fs
+df -h $HOME    ->  /dev/sda                                  /home/<login>
+```
 
-- **Run `42sync` before you leave a seat.** Anything unsynced stays on that machine.
-- **Run `42sync seed` when you sit at a new one.** Never plain `42sync` on an empty folder.
+Check `$HOME`, not `/home`. `/home` itself lives on the machine's root filesystem, so
+looking there suggests homes are local and per-machine. They are not — the per-user
+volume is mounted one level deeper. Verified by logging into a second seat and finding
+`~/bin`, `~/Projects`, `~/.config/rclone` and the bisync baseline all present.
+
+So this sync is **not** the mechanism that carries work between seats — that already
+works. What it is for:
+
+- **An off-machine copy.** The home volume is a single point of failure, and it is
+  yours alone. Nothing else backs it up.
+- **Reach from outside the campus.** Your own laptop, via the same Drive folder.
+- **A second copy of git history you cannot push.** See *Repos you can no longer push*
+  under Known limitations — for those repos there is no remote to fall back on.
+
+Three habits still matter:
+
+- **Run `42sync` when you finish something worth not losing.** Not because the seat
+  will eat it, but because one volume is one copy.
+- **`42sync seed` is for an empty `~/Projects`, not for a new seat.** On a campus
+  machine your files are already there — run `42sync check` instead.
 - **Git is your durable copy for code — where you can still push.** Push to vogsphere
-  before you leave. Drive mirrors `.git` directories whole, but a mirror is not a remote.
+  while you can; access is revoked once a project is evaluated. Drive mirrors `.git`
+  directories whole, but a mirror is not a remote.
   This advice has an exception worth knowing about: see *Repos you can no longer push*
   under Known limitations.
 
@@ -101,7 +123,11 @@ week and demand re-authorization. Publishing removes that.
 Cost of publishing: an unverified-app warning screen during `rclone config`
 (*Advanced → Go to rclone-42prague (unsafe)*). Expected, harmless, one time.
 
-## First-time setup on a new machine
+## First-time setup
+
+Once per home volume, not once per seat — on a campus machine the tools and config
+follow you. You need this on a genuinely fresh account, or on a machine outside the
+campus (your own laptop).
 
 ```bash
 # 1. Install rclone, 42sync and 42links into ~/bin -- no root required
@@ -163,7 +189,7 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync verify    # compare real content: is everything local actually on Drive?
 42sync status    # local size, remote size, last run
 42sync force     # push a directory rename through (asks twice)
-42sync seed      # first run on a fresh machine only
+42sync seed      # only when ~/Projects is empty (fresh account / other machine)
 ```
 
 ### `check` and `verify` answer different questions
@@ -185,8 +211,8 @@ If `check` says "No changes found" but `verify` fails, the baseline is the thing
 is wrong — see TROUBLESHOOTING.md before reaching for `--resync`.
 
 `42links` maintains `docs` and `repos` shortcuts in `~`, `~/Documents` and `~/Downloads`,
-pointing into the synced tree. They live in `$HOME`, so they are per-machine setup —
-run it once per seat, like `42sync seed` and `rclone config`:
+pointing into the synced tree. They live in `$HOME`, so on a campus machine they
+follow you and you only need this once:
 
 ```bash
 42links          # create or refresh the links
@@ -208,13 +234,14 @@ rather than stripping them; `setopt interactive_comments` in `~/.zshrc` fixes it
 
 ## Safety mechanisms
 
-These are not decoration. Each one exists because the failure it prevents is real
-on a machine whose home directory can be wiped.
+These are not decoration. Each one exists because the failure it prevents actually
+happened during setup.
 
 **`--check-access`** — refuses to sync unless an `RCLONE_TEST` marker file is present
-on *both* sides. Without it, sitting at a fresh machine and running `42sync` out of
-habit would present an empty local folder as "everything was deleted" and take your
-Drive copy with it.
+on *both* sides. Without it, running `42sync` against an empty or wrong `~/Projects`
+would present it as "everything was deleted" and take your Drive copy with it. That is
+not hypothetical: it fired correctly during setup when the local folder had been
+renamed out from under it.
 
 **`--max-delete 25`** — aborts if more than a quarter of files would disappear.
 Second net under the first.

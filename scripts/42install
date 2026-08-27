@@ -407,7 +407,7 @@ post_checks() {
   fi
 
   if [[ ! -d "$HOME/Projects" ]]; then
-    note_todo "Pull your files down: 42sync seed   (only on a fresh machine)"
+    note_todo "~/Projects is missing — if that is expected: 42sync seed"
   elif [[ ! -f "$HOME/Projects/RCLONE_TEST" ]]; then
     yellow "warn       ~/Projects exists but has no RCLONE_TEST marker"
     note_todo "~/Projects has no access marker — read README, Safety mechanisms, before syncing"

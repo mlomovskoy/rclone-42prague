@@ -76,7 +76,9 @@ is gone first.
 touch ~/Projects/RCLONE_TEST
 ```
 
-**Fix, if you are on a new machine:** `42sync seed`.
+**Fix, if `~/Projects` is genuinely empty** (fresh account, or a machine outside the
+campus): `42sync seed`. On a campus seat your home follows you, so an empty
+`~/Projects` there means something went wrong — investigate before seeding over it.
 
 ---
 
