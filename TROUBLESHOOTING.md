@@ -130,7 +130,7 @@ EOF
 
 ---
 
-## Excluded files are stranded on Drive forever
+## Excluded files are stranded on Drive
 
 **Symptom:** files you have since excluded in the filter file are still on Drive, and no
 sync ever removes them. `rclone rmdirs` then fails on their directories:
@@ -152,16 +152,30 @@ invisible to every future run.
 `appNotAuthorizedToChild` is the `drive.file` scope: rclone cannot remove a folder that
 holds anything it did not create. Retrying does not help.
 
-**Fix:** delete them from the Drive web UI. You own the files even where the app does
-not have access. Web-side deletion is safe here *only* because these paths exist in
-neither the local tree nor the bisync baseline, so bisync never sees the change — the
-usual "never touch it from the web" rule does not apply to already-orphaned files.
+**Fix:** `42sync orphans`.
 
-To find them before deciding:
+It reads the exclude patterns out of your filter file and passes them as `--include`,
+which is the only way to reach these files; lists what it found; shows a delete dry
+run; and makes you type `DELETE` before touching anything.
+
+By hand, if you prefer:
 
 ```bash
-rclone ls gdrive:_projects_rclone --include "**/*.out" --include "**/a.out"
+rclone ls     gdrive:_projects_rclone --include "**/*.out" --include "**/a.out"
+rclone delete gdrive:_projects_rclone --include "**/*.out" --include "**/a.out" --dry-run -v
 ```
+
+Note there is no `--filter-from` in those commands. Adding it would re-hide the very
+files you are trying to reach — which is why these looked unreachable at first.
+Deletions go to Drive's trash, so there is roughly a 30-day recovery window.
+
+**The empty directories left behind are a separate problem.** `rclone rmdirs
+gdrive:_projects_rclone --leave-root` clears the ones that become genuinely empty. Any
+that still report `appNotAuthorizedToChild` never will, because that folder holds
+something rclone did not create. Those are web-UI only — and cosmetic, since an empty
+folder occupies no space.
+
+bisync is unaffected by any of this: these files were never in its listings.
 
 **Avoid it next time** by tightening filters *before* a large upload, not after.
 

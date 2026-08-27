@@ -189,6 +189,7 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync verify    # compare real content: is everything local actually on Drive?
 42sync status    # local size, remote size, last run
 42sync force     # push a directory rename through (asks twice)
+42sync orphans   # delete excluded files stranded on Drive (asks twice)
 42sync seed      # only when ~/Projects is empty (fresh account / other machine)
 ```
 

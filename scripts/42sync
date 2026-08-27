@@ -6,6 +6,7 @@
 #   42sync check     dry run: show what WOULD change, touch nothing
 #   42sync verify    compare real content: is everything local actually on Drive?
 #   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
+#   42sync orphans   delete excluded files stranded on Drive (asks twice)
 #   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
 #   42sync status    local size, remote size, recent runs
 #   42sync logs      list kept logs
@@ -55,6 +56,11 @@ red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 die()    { red "$*" >&2; exit 1; }
+
+# Terminal output is not otherwise logged — rclone's is, via tee. Used by the
+# destructive paths to record the decision, so a log answers "did this actually
+# delete anything?" without needing to have watched it happen.
+logmsg() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
 MODE="${1:-sync}"
 
@@ -280,6 +286,80 @@ EOF
     green "Forced sync complete. Normal '42sync' works again from here."
     ;;
 
+  # An excluded file is invisible to sync in BOTH directions, so anything on Drive
+  # matching an exclude was uploaded before that rule existed and no future run can
+  # ever transfer or remove it. Only reachable by dropping --filter-from and naming
+  # the same patterns as --include instead. Deliberately not part of any sync: this
+  # deletes, and it should never happen as a side effect of something else.
+  orphans)
+    new_log
+    mapfile -t EXCL < <(grep -E '^- ' "$FILTERS" | sed 's/^- //')
+    (( ${#EXCL[@]} )) || die "No exclude rules in $FILTERS — nothing can be orphaned."
+    INC=()
+    for pat in "${EXCL[@]}"; do INC+=(--include "$pat"); done
+
+    logmsg "=== 42sync orphans $(date '+%F %T') host=$(uname -n) ==="
+    logmsg "remote=$REMOTE filters=$FILTERS"
+    logmsg "patterns: ${EXCL[*]}"
+    yellow "Exclude patterns, read from $FILTERS:"
+    printf '  %s\n' "${EXCL[@]}"
+    cat <<'EOF'
+
+Files on Drive matching these were uploaded before the rule existed. No sync sees
+them, so nothing will ever move or remove them. That is what makes them orphans.
+
+Read the list below. These patterns are whatever your filter file says TODAY — if
+you added a broad exclude recently, its files on Drive appear here too, and those
+may be files you still want.
+EOF
+    echo
+    listing="$(mktemp)"
+    rclone ls "$REMOTE" "${INC[@]}" >"$listing" 2>>"$LOG" || {
+      rm -f "$listing"; die "Could not list $REMOTE. Log: $LOG"; }
+    n=$(wc -l < "$listing")
+    if (( n == 0 )); then
+      rm -f "$listing"; logmsg "RESULT: none found"; prune_logs
+      green "No orphans on Drive — nothing to clean up."
+      exit 0
+    fi
+    bytes=$(awk '{s+=$1} END{print s+0}' "$listing")
+    yellow "$n file(s), $(numfmt --to=iec "$bytes" 2>/dev/null || echo "$bytes B") on Drive:"
+    head -40 "$listing" | sed 's/^/  /'
+    if (( n > 40 )); then echo "  ... and $((n - 40)) more — full list in the log"; fi
+    { echo "--- orphans found ---"; cat "$listing"; } >> "$LOG"
+    rm -f "$listing"
+
+    echo
+    read -r -p "Press Enter to see the delete dry run (Ctrl-C to abort) " _ || true
+    rclone delete "$REMOTE" "${INC[@]}" --dry-run --verbose 2>&1 | tee -a "$LOG"
+    echo
+    yellow "Nothing has been deleted yet."
+    read -r -p "Type DELETE to remove them from Drive: " reply || true
+    if [[ "$reply" != "DELETE" ]]; then
+      logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
+      prune_logs
+      die "Aborted — nothing was changed."
+    fi
+    logmsg "confirmed by user — deleting $n file(s)"
+
+    rclone delete "$REMOTE" "${INC[@]}" --verbose 2>&1 | tee -a "$LOG"
+    rc=${PIPESTATUS[0]}
+    (( rc == 0 )) || { logmsg "RESULT: delete failed (rc=$rc)"; prune_logs; die "Delete failed. Log: $LOG"; }
+    logmsg "RESULT: deleted $n file(s), $bytes bytes — recoverable from Drive trash"
+
+    echo
+    yellow "Removing directories left empty ..."
+    echo "Errors here are expected and harmless: under the drive.file scope rclone"
+    echo "cannot remove a folder that holds anything it did not create."
+    rclone rmdirs "$REMOTE" --leave-root --verbose 2>&1 | tee -a "$LOG" || true
+
+    prune_logs
+    echo
+    green "Done. Deleted files sit in Drive's trash for about 30 days."
+    echo "bisync is unaffected — these files were never in its listings."
+    green "Log: $LOG"
+    ;;
+
   status)
     echo "Local:  $LOCAL"
     du -sh "$LOCAL" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
@@ -317,6 +397,6 @@ EOF
     ;;
 
   *)
-    die "Usage: 42sync [sync|check|verify|force|seed|status|logs]"
+    die "Usage: 42sync [sync|check|verify|force|orphans|seed|status|logs]"
     ;;
 esac
