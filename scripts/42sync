@@ -6,10 +6,11 @@
 #   42sync check     dry run: show what WOULD change, touch nothing
 #   42sync verify    compare real content: is everything local actually on Drive?
 #   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
-#   42sync orphans   delete excluded files stranded on Drive (asks twice)
+#   42sync orphans        delete excluded files stranded on Drive (asks twice)
+#   42sync orphans check  list them and stop -- deletes nothing
 #   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
 #   42sync status    local size, remote size, recent runs
-#   42sync logs      list kept logs
+#   42sync logs      list kept logs (the one mode that writes no log of its own)
 #
 # Install:  mkdir -p ~/bin && cp 42sync ~/bin/ && chmod +x ~/bin/42sync
 
@@ -60,22 +61,47 @@ die()    { red "$*" >&2; exit 1; }
 # Terminal output is not otherwise logged — rclone's is, via tee. Used by the
 # destructive paths to record the decision, so a log answers "did this actually
 # delete anything?" without needing to have watched it happen.
-logmsg() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
 MODE="${1:-sync}"
 
-# One log per run, newest reachable as last.log. Never clobber history.
-LOG="$LOGDIR/$MODE-$(date +%Y-%m-%d-%H%M%S).log"
-new_log() { ln -sfn "$LOG" "$LOGDIR/last.log"; }
-# Prunes this script's logs only. 42install shares $LOGDIR and prunes its own
-# install-*.log, so neither script deletes the other's evidence.
+# Validate before building a log name, so a typo does not leave a stray
+# bogus-<timestamp>.log behind.
+case "$MODE" in
+  sync|check|verify|force|orphans|seed|status|logs) ;;
+  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|seed|status|logs]" ;;
+esac
+
+# Every run gets its own log, whatever the mode and however it ends. Created
+# here rather than per-branch so the file always exists and the path printed on
+# exit always points at something.
+#
+# 'logs' is the one exception: it exists to list the logs, so writing one would
+# change the very thing it reports and leave a trail of entries that record
+# nothing but having looked.
+LOG=""
+if [[ "$MODE" != logs ]]; then
+  LOG="$LOGDIR/$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+  : > "$LOG"
+  ln -sfn "$LOG" "$LOGDIR/last.log"
+  logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
+fi
+
+# Printed on EVERY exit path — success, failure, abort — so you never have to
+# wonder where the evidence went. A trap rather than a line in each branch:
+# there are nine ways out of this script and they were not all covering it.
+# Rotation happens here too: every mode that writes a log also rotates, including
+# the ones that run no rclone at all, so pruning cannot live in the sync paths only.
+on_exit() { prune_logs; printf '\033[32mLog: %s\033[0m\n' "$LOG"; }
+[[ -n "$LOG" ]] && trap on_exit EXIT
+
+# Prunes this script's logs only, by mode prefix. 42install and 42links share
+# $LOGDIR and prune their own, so no script deletes another's evidence.
 prune_logs() {
-  local n
-  n=$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -vE '/(last|install-[^/]*)\.log$' | wc -l)
-  if (( n > KEEP_LOGS )); then
-    ls -1t "$LOGDIR"/*.log | grep -vE '/(last|install-[^/]*)\.log$' \
-      | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
-  fi
+  local keep
+  keep=$(ls -1t "$LOGDIR"/{sync,check,verify,force,orphans,seed,status,logs,mirror}-*.log 2>/dev/null)
+  [[ -n "$keep" ]] || return 0
+  printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
 
 # Long runs die with the terminal. Say so before, not after.
@@ -116,7 +142,6 @@ check_repos() {
 
 # Run bisync, keep the log, and translate rclone's cryptic failures.
 run_bisync() {
-  new_log
   # Where this run's output starts. 'force' calls run_bisync twice into the same log,
   # so diagnosing against the whole file would match the dry run's message and report
   # the wrong cause for the real run's failure.
@@ -124,7 +149,6 @@ run_bisync() {
   [[ -f "$LOG" ]] && start=$(wc -c < "$LOG")
   rclone bisync "$LOCAL" "$REMOTE" "$@" 2>&1 | tee -a "$LOG"
   local rc=${PIPESTATUS[0]}
-  prune_logs
   if (( rc != 0 )); then
     local this_run
     this_run="$(tail -c "+$((start + 1))" "$LOG" 2>/dev/null)"
@@ -157,7 +181,6 @@ directories — bisync compares by path, so a rename reads as mass deletion plus
 mass creation.
 
 Check the log, then:  42sync force
-Log: $LOG
 EOF
     elif grep -q 'Access test failed' <<<"$this_run"; then
       red "Access check failed — the RCLONE_TEST marker is missing on one side."
@@ -166,10 +189,9 @@ EOF
       echo "Find out why it is gone before working around it."
     fi
     echo
-    red "Failed. Log: $LOG"
+    red "Failed."
     exit "$rc"
   fi
-  green "Log: $LOG"
 }
 
 case "$MODE" in
@@ -182,11 +204,10 @@ case "$MODE" in
       die "$LOCAL is not empty. 'seed' only runs against an empty folder.
 Run '42sync check' first to see what a normal sync would do."
     fi
-    new_log
     rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --links --verbose 2>&1 | tee -a "$LOG"
     # Stop here on a partial pull. Taking a baseline over a half-copied tree records
     # the missing files as "deleted locally", and the next sync removes them on Drive.
-    (( PIPESTATUS[0] == 0 )) || die "Pull from $REMOTE failed. Log: $LOG
+    (( PIPESTATUS[0] == 0 )) || die "Pull from $REMOTE failed.
 Nothing was seeded. Fix the error above and run '42sync seed' again."
     touch "$LOCAL/RCLONE_TEST"
     rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
@@ -207,7 +228,6 @@ Nothing was seeded. Fix the error above and run '42sync seed' again."
   # --max-delete are bisync flags, and `rclone check` rejects them.
   verify)
     require_local
-    new_log
     yellow "Verifying that every local file exists on Drive ..."
     cat <<'EOF'
 This reads both sides in full, so it takes a while. It is read-only — safe to
@@ -225,11 +245,9 @@ EOF
       --missing-on-dst "$miss" \
       --verbose 2>&1 | tee -a "$LOG"
     rc=${PIPESTATUS[0]}
-    prune_logs
     if (( rc == 0 )); then
       rm -f "$miss"
       green "Verified — every local file is on Drive, with matching content."
-      green "Log: $LOG"
     else
       echo
       red "Verification FAILED — local files are missing from Drive, or differ."
@@ -253,8 +271,6 @@ Most often this just means you have edited something since the last sync:
 If '42sync check' reports "No changes found" while this still fails, then the
 baseline agrees with neither side and is the thing that is wrong. Read the
 --resync warning in TROUBLESHOOTING.md before reaching for it.
-
-Log: $LOG
 EOF
       exit "$rc"
     fi
@@ -292,13 +308,17 @@ EOF
   # the same patterns as --include instead. Deliberately not part of any sync: this
   # deletes, and it should never happen as a side effect of something else.
   orphans)
-    new_log
+    SUB="${2:-clean}"
+    case "$SUB" in
+      check|clean) ;;
+      *) die "Usage: 42sync orphans [check]" ;;
+    esac
     mapfile -t EXCL < <(grep -E '^- ' "$FILTERS" | sed 's/^- //')
     (( ${#EXCL[@]} )) || die "No exclude rules in $FILTERS — nothing can be orphaned."
     INC=()
     for pat in "${EXCL[@]}"; do INC+=(--include "$pat"); done
 
-    logmsg "=== 42sync orphans $(date '+%F %T') host=$(uname -n) ==="
+    logmsg "=== 42sync orphans $SUB $(date '+%F %T') host=$(uname -n) ==="
     logmsg "remote=$REMOTE filters=$FILTERS"
     logmsg "patterns: ${EXCL[*]}"
     yellow "Exclude patterns, read from $FILTERS:"
@@ -314,11 +334,15 @@ may be files you still want.
 EOF
     echo
     listing="$(mktemp)"
-    rclone ls "$REMOTE" "${INC[@]}" >"$listing" 2>>"$LOG" || {
-      rm -f "$listing"; die "Could not list $REMOTE. Log: $LOG"; }
+    # stderr is deliberately NOT redirected. rclone writes the config password
+    # prompt to stderr, and sending it to the log turns "asking you something"
+    # into "hung for no reason" — with stdout already going to $listing there
+    # would be nothing on screen at all. Same trap as the one fixed in 'status'.
+    rclone ls "$REMOTE" "${INC[@]}" >"$listing" || {
+      rm -f "$listing"; die "Could not list $REMOTE."; }
     n=$(wc -l < "$listing")
     if (( n == 0 )); then
-      rm -f "$listing"; logmsg "RESULT: none found"; prune_logs
+      rm -f "$listing"; logmsg "RESULT: none found"
       green "No orphans on Drive — nothing to clean up."
       exit 0
     fi
@@ -329,6 +353,14 @@ EOF
     { echo "--- orphans found ---"; cat "$listing"; } >> "$LOG"
     rm -f "$listing"
 
+    if [[ "$SUB" == check ]]; then
+      logmsg "RESULT: listed only — nothing was deleted"
+        echo
+      green "Read-only — nothing was deleted."
+      echo "To remove them:  42sync orphans"
+      exit 0
+    fi
+
     echo
     read -r -p "Press Enter to see the delete dry run (Ctrl-C to abort) " _ || true
     rclone delete "$REMOTE" "${INC[@]}" --dry-run --verbose 2>&1 | tee -a "$LOG"
@@ -337,14 +369,13 @@ EOF
     read -r -p "Type DELETE to remove them from Drive: " reply || true
     if [[ "$reply" != "DELETE" ]]; then
       logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
-      prune_logs
-      die "Aborted — nothing was changed."
+        die "Aborted — nothing was changed."
     fi
     logmsg "confirmed by user — deleting $n file(s)"
 
     rclone delete "$REMOTE" "${INC[@]}" --verbose 2>&1 | tee -a "$LOG"
     rc=${PIPESTATUS[0]}
-    (( rc == 0 )) || { logmsg "RESULT: delete failed (rc=$rc)"; prune_logs; die "Delete failed. Log: $LOG"; }
+    (( rc == 0 )) || { logmsg "RESULT: delete failed (rc=$rc)"; die "Delete failed."; }
     logmsg "RESULT: deleted $n file(s), $bytes bytes — recoverable from Drive trash"
 
     echo
@@ -353,11 +384,9 @@ EOF
     echo "cannot remove a folder that holds anything it did not create."
     rclone rmdirs "$REMOTE" --leave-root --verbose 2>&1 | tee -a "$LOG" || true
 
-    prune_logs
     echo
     green "Done. Deleted files sit in Drive's trash for about 30 days."
     echo "bisync is unaffected — these files were never in its listings."
-    green "Log: $LOG"
     ;;
 
   status)
@@ -397,6 +426,6 @@ EOF
     ;;
 
   *)
-    die "Usage: 42sync [sync|check|verify|force|orphans|seed|status|logs]"
+    die "unreachable: mode was validated at startup"
     ;;
 esac

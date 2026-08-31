@@ -171,12 +171,11 @@ make for you.
 Re-run it any time to update the tools. It is idempotent: it only touches what has
 actually changed, and `42install check` shows what it would do without doing it.
 
-Every run writes `~/.local/state/42sync/install-<timestamp>.log` — the same directory
-`42sync` uses, so there is one place to look. The log keeps what the terminal does not:
-the exact URLs fetched, `curl`'s own error text (it runs silent), the full gpg output,
-and — when a signature or checksum check fails — the `SHA256SUMS` as received. That
-evidence would otherwise die with the temp directory. Each script prunes only its own
-logs, so neither deletes the other's.
+Every run writes `~/.local/state/42sync/install-<timestamp>.log` (see *Logs* under
+Daily use). It keeps what the terminal does not: the exact URLs fetched, `curl`'s own
+error text (it runs silent), the full gpg output, and — when a signature or checksum
+check fails — the `SHA256SUMS` as received. That evidence would otherwise die with the
+temp directory.
 
 `42sync seed` refuses to run against a non-empty `~/Projects`. That is deliberate —
 it exists to prevent a half-populated folder from being taken as the truth.
@@ -190,6 +189,7 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync status    # local size, remote size, last run
 42sync force     # push a directory rename through (asks twice)
 42sync orphans   # delete excluded files stranded on Drive (asks twice)
+42sync orphans check   # list them and stop -- deletes nothing
 42sync seed      # only when ~/Projects is empty (fresh account / other machine)
 ```
 
@@ -226,9 +226,33 @@ Both scripts refuse to touch a real directory sitting where a link would go, and
 `42links` refuses to run at all if a destination resolves inside `~/Projects` — a link
 in there would be mirrored to Drive as a `.rclonelink` holding a per-machine path.
 
-Logs: `~/.local/state/42sync/last.log` (newest sync; `42sync logs` lists all, including
-`42install`'s `install-*.log`)
 Filters: `~/.config/rclone/projects-filters.txt` (created on first run, yours to edit)
+
+### Logs
+
+Every run of every script writes its own log and prints the path as its **last line**,
+whether it succeeded, failed or was aborted — with one deliberate exception,
+`42sync logs`, which exists to list the logs and would otherwise change what it
+reports:
+
+```
+Log: /home/<login>/.local/state/42sync/verify-2026-08-31-142752.log
+```
+
+All three scripts write to `~/.local/state/42sync/`, so there is one place to look:
+
+| Prefix | Written by |
+|---|---|
+| `sync-` `check-` `verify-` `force-` `orphans-` `seed-` `status-` | `42sync`, named after the mode |
+| `install-` | `42install` |
+| `links-<mode>-` | `42links` |
+
+`last.log` symlinks to the most recent `42sync` run of any mode. Each script keeps its
+own newest 20 and prunes only its own prefixes, so none can delete another's evidence.
+`42sync logs` lists what is there, and writes nothing itself.
+
+That directory is deliberately **not** `~/.cache`, which these machines wipe between
+logins — see *Where state lives* above.
 
 Do not paste those `#` comments into zsh. Interactive zsh passes them as arguments
 rather than stripping them; `setopt interactive_comments` in `~/.zshrc` fixes it.

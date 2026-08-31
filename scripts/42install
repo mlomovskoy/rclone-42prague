@@ -91,7 +91,10 @@ note_todo() { TODO+=("$1"); }
 
 TMP=""
 cleanup() { [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"; return 0; }
-trap cleanup EXIT
+# Print the log path on EVERY exit path, not just the successful one — a failed
+# install is exactly when you want to know where the evidence went.
+on_exit() { cleanup; prune_logs; printf '%sLog: %s%s\n' "$C_GRN" "$LOG" "$C_OFF"; }
+trap on_exit EXIT
 
 # ---------------------------------------------------------------- platform ---
 
@@ -449,5 +452,3 @@ if (( ${#TODO[@]} )); then
 fi
 
 logmsg "RESULT: ok"
-prune_logs
-green "Log: $LOG"

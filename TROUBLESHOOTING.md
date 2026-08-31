@@ -152,7 +152,7 @@ invisible to every future run.
 `appNotAuthorizedToChild` is the `drive.file` scope: rclone cannot remove a folder that
 holds anything it did not create. Retrying does not help.
 
-**Fix:** `42sync orphans`.
+**Fix:** `42sync orphans check` to see what is there, `42sync orphans` to remove it.
 
 It reads the exclude patterns out of your filter file and passes them as `--include`,
 which is the only way to reach these files; lists what it found; shows a delete dry

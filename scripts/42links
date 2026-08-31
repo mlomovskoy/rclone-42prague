@@ -32,12 +32,39 @@ LINK_NAMES=(docs repos)
 # where to place them
 DIRS=("$HOME" "$HOME/Documents" "$HOME/Downloads")
 
-red()   { printf '\033[31m%s\033[0m\n' "$*"; }
-green() { printf '\033[32m%s\033[0m\n' "$*"; }
-yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
-die()   { red "$*" >&2; exit 1; }
-
 MODE="${1:-create}"
+case "$MODE" in
+  create|check|clean|status) ;;
+  *) printf '\033[31mUsage: 42links [create|check|clean|status]\033[0m\n' >&2; exit 1 ;;
+esac
+
+# Same directory and rotation policy as 42sync and 42install, so there is one
+# place to look. links-* prefix so each script prunes only its own.
+LOGDIR="$HOME/.local/state/42sync"
+KEEP_LOGS=20
+LOG="$LOGDIR/links-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+mkdir -p "$LOGDIR"
+: > "$LOG"
+
+logmsg() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+red()   { printf '\033[31m%s\033[0m\n' "$*"; logmsg "$*"; }
+green() { printf '\033[32m%s\033[0m\n' "$*"; logmsg "$*"; }
+yellow(){ printf '\033[33m%s\033[0m\n' "$*"; logmsg "$*"; }
+die()   { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
+
+logmsg "=== 42links $MODE $(date '+%F %T') host=$(uname -n) ==="
+
+prune_logs() {
+  local keep
+  keep=$(ls -1t "$LOGDIR"/links-*.log 2>/dev/null) || true
+  [[ -n "$keep" ]] || return 0
+  printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
+}
+
+# Printed on every exit path, however the script ends.
+on_exit() { prune_logs; printf '\033[32mLog: %s\033[0m\n' "$LOG"; }
+trap on_exit EXIT
+
 DRY=0
 [[ "$MODE" == "check" ]] && { MODE=create; DRY=1; }
 
@@ -129,6 +156,6 @@ Dry run — nothing was changed."
     ;;
 
   *)
-    die "Usage: 42links [create|check|clean|status]"
+    die "unreachable: mode was validated at startup"
     ;;
 esac
