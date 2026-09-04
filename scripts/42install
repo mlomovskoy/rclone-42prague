@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 42install — put rclone, 42sync and 42links in ~/bin. No root required.
+# 42install — put rclone, 42sync, 42links and 42password in ~/bin. No root
+# required. Runs on Linux, macOS, and Windows via Git for Windows' bash.
 #
 #   42install         install or update whatever needs it
 #   42install check   show what would happen, change nothing
@@ -98,10 +99,17 @@ trap on_exit EXIT
 
 # ---------------------------------------------------------------- platform ---
 
+# EXE is the binary suffix ("" everywhere except Windows). Windows here means
+# Git for Windows' bash (MSYS/MINGW), not native cmd/PowerShell — this script
+# is bash, so that is the only way it runs there at all. uname -s reports
+# something like MINGW64_NT-10.0-... or MSYS_NT-... in that environment.
+EXE=""
 case "$(uname -s)" in
-  Linux)  OS=linux ;;
-  Darwin) OS=osx ;;
-  *)      die "Unsupported OS: $(uname -s). This installer covers Linux and macOS." ;;
+  Linux)                 OS=linux ;;
+  Darwin)                OS=osx ;;
+  MINGW*|MSYS*|CYGWIN*)  OS=windows; EXE=".exe" ;;
+  *)      die "Unsupported OS: $(uname -s). This installer covers Linux, macOS, and
+Windows via Git for Windows' bash (not native cmd/PowerShell)." ;;
 esac
 
 case "$(uname -m)" in
@@ -122,11 +130,50 @@ fetch() {  # url dest
   fi
 }
 
+# Windows-native tools (certutil, powershell) do not understand Git Bash's
+# POSIX-style paths. cygpath is part of the same MSYS runtime Git Bash ships,
+# so it is the one thing here safe to assume alongside it.
+to_winpath() {
+  if have cygpath; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+
 sha256_of() {
   if   have sha256sum; then sha256sum "$1" | awk '{print $1}'
   elif have shasum;    then shasum -a 256 "$1" | awk '{print $1}'
-  else die "Need sha256sum or shasum to verify the download."
+  elif have certutil.exe; then
+    # Git Bash ships neither sha256sum nor shasum on some minimal installs;
+    # certutil is a native Windows tool, present even then.
+    certutil.exe -hashfile "$(to_winpath "$1")" SHA256 | sed -n '2p' | tr -d ' \r'
+  else die "Need sha256sum, shasum, or certutil to verify the download."
   fi
+}
+
+# `install` (the coreutil) is not guaranteed on a minimal Git Bash — fall back
+# to cp+chmod, which is what it does under the hood anyway for our purposes.
+install_file() {  # src dest
+  if have install; then
+    install -m 755 "$1" "$2"
+  else
+    cp -f "$1" "$2" && chmod 755 "$2" 2>/dev/null
+  fi
+}
+
+# Git Bash does not bundle unzip by default. PowerShell's Expand-Archive is
+# present on every Windows 10+ box, so fall back to calling it directly rather
+# than asking the user to separately install an unzip binary.
+unzip_archive() {  # zip destdir
+  if have unzip; then
+    unzip -q -o "$1" -d "$2"
+    return $?
+  fi
+  if have powershell.exe; then
+    mkdir -p "$2"
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "Expand-Archive -LiteralPath '$(to_winpath "$1")' -DestinationPath '$(to_winpath "$2")' -Force" \
+      >>"$LOG" 2>&1
+    return $?
+  fi
+  die "Need unzip (or, on Windows, PowerShell's Expand-Archive) to unpack rclone."
 }
 
 # Look in $BINDIR before consulting PATH: on a fresh machine ~/bin is not on PATH
@@ -139,8 +186,8 @@ RCLONE_PATH=""
 RCLONE_VER=""
 detect_rclone() {
   RCLONE_PATH=""; RCLONE_VER=""
-  if   [[ -x "$BINDIR/rclone" ]]; then RCLONE_PATH="$BINDIR/rclone"
-  elif have rclone;              then RCLONE_PATH="$(command -v rclone)"
+  if   [[ -x "$BINDIR/rclone$EXE" ]]; then RCLONE_PATH="$BINDIR/rclone$EXE"
+  elif have rclone;                   then RCLONE_PATH="$(command -v rclone)"
   else return 0
   fi
   # `rclone version` does not read the config file, so this never prompts for
@@ -291,7 +338,7 @@ install_rclone() {
 
   if (( DRY )); then
     say "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip and install it"
-    say "  to ${BINDIR/#$HOME/\~}/rclone after checking its SHA256"
+    say "  to ${BINDIR/#$HOME/\~}/rclone$EXE after checking its SHA256"
     if have gpg && [[ -f "$RCLONE_KEY_FILE" ]]; then
       say "  against a SHA256SUMS verified as signed by $RCLONE_KEY_FPR"
     elif [[ "${INSTALL_ALLOW_UNSIGNED:-0}" == "1" ]]; then
@@ -326,16 +373,15 @@ Nothing was installed. Delete any partial download and try again."
   fi
   say "  checksum ok"
 
-  have unzip || die "Need unzip to unpack rclone."
-  unzip -q -o "$TMP/$asset" -d "$TMP/x"
-  [[ -f "$TMP/x/rclone-v$want-$OS-$ARCH/rclone" ]] \
+  unzip_archive "$TMP/$asset" "$TMP/x" || die "Failed to unpack $asset."
+  [[ -f "$TMP/x/rclone-v$want-$OS-$ARCH/rclone$EXE" ]] \
     || die "Archive did not contain the expected rclone binary."
 
   mkdir -p "$BINDIR"
-  # `install` replaces the file rather than writing through it, so this is safe
-  # even if another shell is running the old binary right now.
-  install -m 755 "$TMP/x/rclone-v$want-$OS-$ARCH/rclone" "$BINDIR/rclone"
-  green "installed  rclone v$want -> ${BINDIR/#$HOME/\~}/rclone"
+  # install_file replaces the file rather than writing through it, so this is
+  # safe even if another shell is running the old binary right now.
+  install_file "$TMP/x/rclone-v$want-$OS-$ARCH/rclone$EXE" "$BINDIR/rclone$EXE"
+  green "installed  rclone v$want -> ${BINDIR/#$HOME/\~}/rclone$EXE"
 }
 
 # ----------------------------------------------------------------- scripts ---
@@ -358,7 +404,7 @@ install_scripts() {
       continue
     fi
     mkdir -p "$BINDIR"
-    install -m 755 "$SRC/$name" "$BINDIR/$name"
+    install_file "$SRC/$name" "$BINDIR/$name"
     green "installed  $name -> ${BINDIR/#$HOME/\~}/$name"
   done
 }
