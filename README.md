@@ -52,10 +52,11 @@ Three habits still matter:
 ```
 README.md                    this file
 TROUBLESHOOTING.md           every error hit during setup, and the fix
-scripts/42install            installs the two below, plus rclone itself
+scripts/42install            installs the three below, plus rclone itself
 scripts/rclone-release-key.asc  rclone's release signing key, used by 42install
 scripts/42sync               the sync wrapper (install to ~/bin)
 scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
+scripts/42password           store the config password so it stops prompting (install to ~/bin)
 templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
 docs/                        GitHub Pages site (home / privacy / terms)
 ```
@@ -316,7 +317,8 @@ The one case that does need drive.google.com is a purge failing with
 the `drive.file` scope no rclone command can remove it.
 
 Filters: `~/.config/rclone/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
-caches — shared intent on every machine, created on first run, yours to edit)
+caches, Claude Code's `.claude/` runtime state — shared intent on every machine,
+created on first run, yours to edit)
 
 ### Logs
 
@@ -407,9 +409,31 @@ can end up with a half-written index or dangling objects. Recoverable if you pus
 painful if you did not.
 
 **Every command prompts for the config password.** That is the cost of encrypting
-it. For unattended runs use `--password-command` with `secret-tool` rather than
-putting `RCLONE_CONFIG_PASS` in your shell profile — a world-readable rc file is not
+it. For unattended runs use `--password-command` pointing at a real secret store,
+never `RCLONE_CONFIG_PASS` in a shell profile — a world-readable rc file is not
 an improvement over a world-readable config.
+
+`42password` sets this up: macOS Keychain via the `security` CLI, or on Linux
+`secret-tool` (libsecret/GNOME Keyring — install `libsecret-tools`/`libsecret`
+first if it's missing). It stores the password once, wires
+`RCLONE_PASSWORD_COMMAND` into your shell rc, and verifies with a real,
+harmless `rclone listremotes` that it actually works before declaring success.
+
+```bash
+42password         # set it up (or confirm it already is)
+42password check   # dry run, changes nothing
+42password force   # re-store the password (e.g. you changed it)
+```
+
+On Linux, `secret-tool` needs a keyring daemon (`gnome-keyring` or equivalent)
+already unlocked in the session — normally true after a desktop login, not
+guaranteed on every campus machine's setup. `42password` reports this plainly
+if storing fails, rather than leaving you to guess why.
+
+Worth doing on your own laptop, where you are the only one who can unlock the
+session in the first place. Worth skipping on the shared campus machine: it moves
+the barrier from "knows the config password" to "is logged into this account",
+which is a real trade the moment more than one person can reach the session.
 
 ## Security notes
 

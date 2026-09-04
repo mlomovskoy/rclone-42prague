@@ -32,7 +32,7 @@ set -euo pipefail
 
 BINDIR="$HOME/bin"
 BASE_URL="https://downloads.rclone.org"
-SCRIPTS=(42sync 42links)
+SCRIPTS=(42sync 42links 42password)
 
 # rclone's release signing key. Cross-checked 2026-08-26 against rclone.org's
 # release_signing page, the same page's source in the rclone git repo, and

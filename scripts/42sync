@@ -49,6 +49,10 @@ if [[ ! -f "$FILTERS" ]]; then
 - **/*.out
 - a.out
 - **/.cache/**
+# Claude Code's own runtime state under ~/Projects (e.g. scheduled_tasks.lock)
+# -- not project content, and sync only runs on demand, so a synced copy is
+# always stale rather than useful.
+- .claude/**
 EOF
   echo "Created filter file: $FILTERS"
 fi

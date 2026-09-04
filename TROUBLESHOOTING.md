@@ -17,20 +17,23 @@ ERROR : Bisync aborted. Must run --resync to recover.
 and also after you rename either side — the cached listings in
 `~/.local/state/42sync/bisync/` are keyed to the literal paths.
 
-**Fix:** establish the baseline once.
+**Fix:**
 
 ```bash
-rclone bisync ~/Projects gdrive:_projects_rclone \
-  --workdir ~/.local/state/42sync/bisync \
-  --filter-from ~/.config/rclone/projects-filters.txt \
-  --check-access --max-delete 25 --links --resync --verbose
+42sync seed      # ~/Projects is empty, Drive is truth
+42sync resync    # both sides already have real content (a laptop joining a
+                 # Drive folder a campus machine already seeded, say)
 ```
 
-`--workdir` matters: without it rclone uses `~/.cache`, which these machines clear
-between sessions. See "The baseline disappears between sessions" below.
+`resync` wraps a `rclone bisync --resync` with the same dry-run-then-confirm guard
+as `force` — it shows you the full transfer plan and makes you type `RESYNC` before
+touching anything. Do not hand-type `rclone bisync --resync` yourself: it is easy
+to drop a `--filter-from` your `projects-local.txt` needs, which silently re-syncs
+something you meant to keep off this machine.
 
-Do this when both sides are small or already identical. See the `--resync` warning
-below before running it on a populated folder.
+`--workdir` is what `resync` (and every other mode) passes so listings live in
+`~/.local/state/42sync/bisync/` rather than `~/.cache`, which these machines clear
+between sessions. See "The baseline disappears between sessions" below.
 
 ---
 
@@ -216,6 +219,28 @@ There is no recovery if the password is lost. Delete `rclone.conf`, re-run
 `rclone config`, paste the client ID and secret from the Cloud console, and
 re-authorize. The credentials still exist in Google Cloud; only the local token is
 gone.
+
+---
+
+## `read: -p: no coprocess` (zsh, while setting up `--password-command`)
+
+**Means:** a bash-style prompt-and-read one-liner was run in zsh:
+
+```bash
+read -s -p "rclone config password: " RCLONE_PW; echo
+```
+
+zsh's `read` has its own `-p`, meaning "read from a coprocess" — nothing to do with
+bash's "show this prompt". zsh does not error on the unrelated meaning; it errors
+because there is no coprocess to read from.
+
+**Fix:** `42password` (see README, Known limitations) handles this itself now — it
+prints its own prompt rather than passing one to `read`. Only relevant if you are
+doing this by hand instead: print the prompt yourself, then read silently:
+
+```bash
+echo -n "rclone config password: "; read -s RCLONE_PW; echo
+```
 
 ---
 
