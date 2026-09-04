@@ -448,7 +448,19 @@ setup_shell() {
 # ------------------------------------------------------------------- checks ---
 
 post_checks() {
-  local conf="$HOME/.config/rclone/rclone.conf" perms
+  local conf rclone_bin perms
+
+  # Ask rclone itself where its config lives rather than hardcoding the
+  # XDG-style ~/.config/rclone/rclone.conf path: native Windows builds default
+  # to %APPDATA%\rclone\rclone.conf instead, and hardcoding the Linux path
+  # there means this check always reports "no config" even after one exists.
+  if [[ -x "$BINDIR/rclone$EXE" ]]; then rclone_bin="$BINDIR/rclone$EXE"
+  elif have rclone;                   then rclone_bin="$(command -v rclone)"
+  else rclone_bin=""
+  fi
+  conf=""
+  [[ -n "$rclone_bin" ]] && conf="$("$rclone_bin" config file 2>/dev/null | tail -1 | tr -d '\r')"
+  [[ -n "$conf" ]] || conf="$HOME/.config/rclone/rclone.conf"
 
   if [[ -f "$conf" ]]; then
     green "ok         rclone config exists"
