@@ -190,6 +190,7 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync force     # push a directory rename through (asks twice)
 42sync orphans   # delete excluded files stranded on Drive (asks twice)
 42sync orphans check   # list them and stop -- deletes nothing
+42sync projects  # choose which projects sync to THIS machine
 42sync seed      # only when ~/Projects is empty (fresh account / other machine)
 ```
 
@@ -226,7 +227,35 @@ Both scripts refuse to touch a real directory sitting where a link would go, and
 `42links` refuses to run at all if a destination resolves inside `~/Projects` — a link
 in there would be mirrored to Drive as a `.rclonelink` holding a per-machine path.
 
-Filters: `~/.config/rclone/projects-filters.txt` (created on first run, yours to edit)
+### Choosing what this machine carries
+
+Not every project belongs on every machine. `~/Projects` is one folder on Drive, but
+a laptop project does not need to land on a campus machine:
+
+```bash
+42sync projects                     # what syncs here, and what does not
+42sync projects exclude MacApp      # stop carrying it on this machine
+42sync projects include MacApp      # start again
+```
+
+An exclusion is **not** a deletion and not a filter on Drive. The remote copy is simply
+never looked at: not transferred, not deleted, left exactly as it is, so the machine
+that owns that project keeps syncing it normally. Re-include it and the next sync pulls
+it back down — no `--resync`, no conflict, provided you do not also have a diverging
+copy locally.
+
+Excluding something that is already on this machine leaves the files on disk; they just
+stop syncing. Delete them yourself to reclaim space, and that deletion will not reach
+Drive, because the path is filtered out by then.
+
+The selection lives in `~/.config/rclone/projects-local.txt`, which is **per-machine and
+never synced** — that is the whole point. It is deliberately a different file from the
+artifact filters below, because `42sync orphans` treats everything the artifact filters
+exclude as junk on Drive and offers to delete it. A project you are keeping on Drive on
+purpose must never appear in that list.
+
+Filters: `~/.config/rclone/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
+caches — shared intent on every machine, created on first run, yours to edit)
 
 ### Logs
 

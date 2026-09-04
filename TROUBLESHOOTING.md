@@ -394,6 +394,24 @@ INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
 
 ---
 
+## A project on Drive never arrives on this machine
+
+**First check whether you excluded it on purpose:**
+
+```bash
+42sync projects
+```
+
+Anything listed as `excluded` is being skipped by this machine by design, and its Drive
+copy is untouched. `42sync projects include <path>` brings it back on the next sync.
+
+If it is listed as `synced` but still does not arrive, the cause is the `drive.file`
+scope, not the filters — see *Files added through drive.google.com never arrive*. A file
+put on Drive through the web is invisible to rclone permanently, whatever the filters
+say.
+
+---
+
 ## An `RCLONE_*` variable breaks every rclone command
 
 **Symptom:** rclone fails or prints nothing for no visible reason — including commands

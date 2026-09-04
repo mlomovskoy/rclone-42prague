@@ -11,6 +11,7 @@
 #   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
 #   42sync status    local size, remote size, recent runs
 #   42sync logs      list kept logs (the one mode that writes no log of its own)
+#   42sync projects  choose which projects sync to THIS machine
 #
 # Install:  mkdir -p ~/bin && cp 42sync ~/bin/ && chmod +x ~/bin/42sync
 
@@ -19,6 +20,16 @@ set -uo pipefail
 LOCAL="$HOME/Projects"
 REMOTE="gdrive:_projects_rclone"
 FILTERS="$HOME/.config/rclone/projects-filters.txt"
+
+# Which projects sync to THIS machine. Deliberately a SEPARATE file from
+# $FILTERS, not another section in it, for one reason: '42sync orphans' treats
+# everything excluded by $FILTERS as junk on Drive that nothing will ever manage
+# and offers to delete it. Project selections are the opposite — files kept on
+# Drive on purpose, usually by another machine. Mixing the two would point the
+# cleanup at exactly the data it must never touch.
+#
+# It lives in ~/.config (never synced), so each machine chooses for itself.
+LOCAL_FILTERS="$HOME/.config/rclone/projects-local.txt"
 LOGDIR="$HOME/.local/state/42sync"
 # bisync's listings live here, NOT in ~/.cache — campus machines clear the cache
 # between sessions, and losing the listings means a forced --resync every time.
@@ -41,12 +52,31 @@ EOF
   echo "Created filter file: $FILTERS"
 fi
 
+if [[ ! -f "$LOCAL_FILTERS" ]]; then
+  cat > "$LOCAL_FILTERS" <<'EOF'
+# Projects NOT synced to this machine. Managed by: 42sync projects
+#
+# Excluding a path here stops it coming down to this machine. The copy on Drive
+# is left completely alone -- not transferred, not deleted -- so another machine
+# can keep using it. Re-include it and the next sync pulls it down.
+#
+# This file is per-machine and is never synced.
+EOF
+fi
+
+# Both filter files, in one place, for every command that must see what this
+# machine actually syncs. NOT used by 'orphans' -- see the note on LOCAL_FILTERS.
+FILTER_ARGS=(--filter-from "$FILTERS")
+if grep -qE '^- ' "$LOCAL_FILTERS" 2>/dev/null; then
+  FILTER_ARGS+=(--filter-from "$LOCAL_FILTERS")
+fi
+
 # --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
 # --max-delete    aborts if >25% of files would vanish ('force' bypasses this).
 # --links         stores symlinks as .rclonelink files instead of skipping them.
 COMMON=(
   --workdir "$WORKDIR"
-  --filter-from "$FILTERS"
+  "${FILTER_ARGS[@]}"
   --check-access
   --max-delete 25
   --links
@@ -68,8 +98,8 @@ MODE="${1:-sync}"
 # Validate before building a log name, so a typo does not leave a stray
 # bogus-<timestamp>.log behind.
 case "$MODE" in
-  sync|check|verify|force|orphans|seed|status|logs) ;;
-  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|seed|status|logs]" ;;
+  sync|check|verify|force|orphans|projects|seed|status|logs) ;;
+  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|projects|seed|status|logs]" ;;
 esac
 
 # Every run gets its own log, whatever the mode and however it ends. Created
@@ -204,7 +234,7 @@ case "$MODE" in
       die "$LOCAL is not empty. 'seed' only runs against an empty folder.
 Run '42sync check' first to see what a normal sync would do."
     fi
-    rclone copy "$REMOTE" "$LOCAL" --filter-from "$FILTERS" --links --verbose 2>&1 | tee -a "$LOG"
+    rclone copy "$REMOTE" "$LOCAL" "${FILTER_ARGS[@]}" --links --verbose 2>&1 | tee -a "$LOG"
     # Stop here on a partial pull. Taking a baseline over a half-copied tree records
     # the missing files as "deleted locally", and the next sync removes them on Drive.
     (( PIPESTATUS[0] == 0 )) || die "Pull from $REMOTE failed.
@@ -239,7 +269,7 @@ EOF
     echo
     miss="$(mktemp)"
     rclone check "$LOCAL" "$REMOTE" \
-      --filter-from "$FILTERS" \
+      "${FILTER_ARGS[@]}" \
       --links \
       --one-way \
       --missing-on-dst "$miss" \
@@ -389,13 +419,113 @@ EOF
     echo "bisync is unaffected — these files were never in its listings."
     ;;
 
+  # Choosing what this machine carries. An exclusion here is not a deletion and
+  # not a filter on Drive: the remote copy is simply never looked at, so another
+  # machine keeps syncing it normally. Verified both directions -- excluding
+  # leaves the Drive copy frozen and intact, re-including pulls it back down
+  # with no conflict and no --resync.
+  projects)
+    SUB="${2:-list}"
+    TARGET="${3:-}"
+
+    excluded_paths() { grep -E '^- /' "$LOCAL_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
+
+    # Note the `--` on every grep whose pattern comes from a variable: project
+    # names here really do start with a dash (-1_PiscineReloaded), and a rule
+    # line always does, so grep would read them as options.
+    norm() {  # validate and normalise a project path
+      local t="${1#/}"; t="${t%/}"
+      [[ -n "$t" ]]                || die "Give a project path, e.g. 42sync projects exclude MacApp"
+      [[ "$t" != *..* ]]           || die "Refusing a path containing '..': $1"
+      printf '%s' "$t"
+    }
+
+    case "$SUB" in
+      list)
+        excl="$(excluded_paths)"
+        yellow "What this machine syncs, under $LOCAL"
+        echo
+        printf '  %-9s %s\n' STATUS PROJECT
+        # Top-level entries on each side. Drive is listed with the artifact
+        # filters only, so excluded projects still appear -- the point is to
+        # show what you are choosing NOT to take.
+        local_dirs="$(find "$LOCAL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)"
+        # stderr left alone on purpose: rclone asks for the config password on
+        # stderr, and hiding it turns this into a silent hang.
+        drive_dirs="$(rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort)"
+        while IFS= read -r name; do
+          [[ -n "$name" ]] || continue
+          where=""
+          grep -qxF -- "$name" <<<"$local_dirs" && where="local"
+          grep -qxF -- "$name" <<<"$drive_dirs" && where="${where:+$where+}Drive"
+          if grep -qxF -- "$name" <<<"$excl"; then
+            printf '  \033[33m%-9s\033[0m %-28s %s\n' excluded "$name" "(${where:-Drive only}, kept there)"
+          else
+            printf '  \033[32m%-9s\033[0m %-28s %s\n' synced "$name" "(${where:-?})"
+          fi
+        done < <(printf '%s\n%s\n%s\n' "$local_dirs" "$drive_dirs" "$excl" | grep -v '^$' | sort -u)
+        # Anything excluded deeper than the top level would be missed above.
+        while IFS= read -r e; do
+          [[ -n "$e" && "$e" == */* ]] && printf '  \033[33m%-9s\033[0m %s\n' excluded "$e"
+        done <<<"$excl"
+        echo
+        echo "  42sync projects exclude <path>   stop syncing it here (stays on Drive)"
+        echo "  42sync projects include <path>   start syncing it here again"
+        logmsg "RESULT: listed"
+        ;;
+
+      exclude)
+        t="$(norm "$TARGET")"
+        rule="- /$t/**"
+        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
+          green "Already excluded on this machine: $t"
+        else
+          printf '%s\n' "$rule" >> "$LOCAL_FILTERS"
+          logmsg "excluded: $t"
+          green "Excluded: $t"
+        fi
+        echo
+        echo "The copy on Drive is untouched — not transferred, not deleted — so any"
+        echo "other machine keeps syncing it normally."
+        if [[ -d "$LOCAL/$t" ]]; then
+          echo
+          yellow "$LOCAL/$t still exists on this machine."
+          echo "It will simply stop syncing. To reclaim the space, delete it yourself:"
+          echo "  rm -rf \"$LOCAL/$t\""
+          echo "That deletion will NOT reach Drive — the path is filtered out now."
+        fi
+        echo
+        echo "Check before you sync:  42sync check"
+        ;;
+
+      include)
+        t="$(norm "$TARGET")"
+        rule="- /$t/**"
+        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
+          tmpf="$(mktemp)"
+          grep -vxF -- "$rule" "$LOCAL_FILTERS" > "$tmpf" && mv "$tmpf" "$LOCAL_FILTERS"
+          logmsg "included: $t"
+          green "Included: $t"
+          echo
+          echo "The next sync pulls it down from Drive."
+          echo "If a different copy already exists here, expect bisync to flag a conflict"
+          echo "rather than silently pick one. Check first:  42sync check"
+        else
+          green "$t was not excluded — nothing to do."
+        fi
+        ;;
+
+      *) die "Usage: 42sync projects [list|exclude <path>|include <path>]" ;;
+    esac
+    ;;
+
   status)
     echo "Local:  $LOCAL"
     du -sh "$LOCAL" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
     [[ -f "$LOCAL/RCLONE_TEST" ]] && green "  access marker present" || yellow "  access marker MISSING"
     echo
     echo "Remote: $REMOTE"
-    rclone size "$REMOTE" --filter-from "$FILTERS" || true
+    rclone size "$REMOTE" "${FILTER_ARGS[@]}" || true
     echo
     echo "Baseline: $WORKDIR"
     if ls "$WORKDIR"/*.lst >/dev/null 2>&1; then
