@@ -192,6 +192,8 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync orphans check   # list them and stop -- deletes nothing
 42sync projects  # choose which projects sync to THIS machine
 42sync seed      # only when ~/Projects is empty (fresh account / other machine)
+42sync resync    # only when ~/Projects already has content AND no baseline exists yet
+                 # (e.g. a laptop joining a Drive folder a campus machine already seeded)
 ```
 
 ### `check` and `verify` answer different questions
@@ -331,7 +333,7 @@ All three scripts write to `~/.local/state/42sync/`, so there is one place to lo
 
 | Prefix | Written by |
 |---|---|
-| `sync-` `check-` `verify-` `force-` `orphans-` `seed-` `status-` | `42sync`, named after the mode |
+| `sync-` `check-` `verify-` `force-` `orphans-` `seed-` `resync-` `status-` | `42sync`, named after the mode |
 | `install-` | `42install` |
 | `links-<mode>-` | `42links` |
 

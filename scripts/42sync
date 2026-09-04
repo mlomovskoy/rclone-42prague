@@ -9,6 +9,7 @@
 #   42sync orphans        delete excluded files stranded on Drive (asks twice)
 #   42sync orphans check  list them and stop -- deletes nothing
 #   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
+#   42sync resync    first sync when BOTH sides already have real content (one-time)
 #   42sync status    local size, remote size, recent runs
 #   42sync logs      list kept logs (the one mode that writes no log of its own)
 #   42sync projects  choose which projects sync to THIS machine
@@ -98,8 +99,8 @@ MODE="${1:-sync}"
 # Validate before building a log name, so a typo does not leave a stray
 # bogus-<timestamp>.log behind.
 case "$MODE" in
-  sync|check|verify|force|orphans|projects|seed|status|logs) ;;
-  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|projects|seed|status|logs]" ;;
+  sync|check|verify|force|orphans|projects|seed|resync|status|logs) ;;
+  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|projects|seed|resync|status|logs]" ;;
 esac
 
 # Every run gets its own log, whatever the mode and however it ends. Created
@@ -129,7 +130,7 @@ on_exit() { prune_logs; printf '\033[32mLog: %s\033[0m\n' "$LOG"; }
 # $LOGDIR and prune their own, so no script deletes another's evidence.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOGDIR"/{sync,check,verify,force,orphans,seed,status,logs,mirror}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOGDIR"/{sync,check,verify,force,orphans,seed,resync,status,logs,mirror}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -194,13 +195,11 @@ That happens when:
   - a previous run was interrupted before it wrote its listings.
 
   ~/Projects empty, Drive is truth    ->  42sync seed
-  Both sides already agree            ->  rclone bisync "$LOCAL" "$REMOTE" \\
-                                            --workdir "$WORKDIR" \\
-                                            --filter-from "$FILTERS" \\
-                                            --check-access --max-delete 25 --links --resync
+  Both sides already have content     ->  42sync resync
 
-Do NOT run --resync when the two sides genuinely differ: it copies Path2-only
-files down to Path1 first, which resurrects anything you deleted or renamed.
+Do not reach for --resync by hand: it copies each side's unique-or-newer file
+to the other, which resurrects anything you deleted or renamed if the two
+sides genuinely diverged rather than just never having met before.
 EOF
     elif grep -q 'too many deletes' <<<"$this_run"; then
       red "Delete guard tripped."
@@ -243,6 +242,47 @@ Nothing was seeded. Fix the error above and run '42sync seed' again."
     rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
     run_bisync "${COMMON[@]}" --resync
     green "Seeded. From now on just run: 42sync"
+    ;;
+
+  # For the other bootstrap case 'seed' does not cover: ~/Projects already has
+  # real content (so 'seed' refuses), and no baseline exists yet for this exact
+  # path pair (so plain bisync refuses too, with "cannot find prior listings").
+  # That combination used to mean hand-typing a raw rclone bisync --resync
+  # command; this mode is that command, with the same dry-run-then-confirm
+  # guard as 'force'.
+  resync)
+    warn_no_multiplexer
+    mkdir -p "$LOCAL"
+    if [[ -z "$(ls -A "$LOCAL" 2>/dev/null)" ]]; then
+      die "$LOCAL is empty — that is what 'seed' is for, not 'resync':
+  42sync seed"
+    fi
+    # 'seed' creates this as part of pulling from an empty folder. Here neither
+    # side is necessarily empty, so create it directly if this machine is new.
+    [[ -f "$LOCAL/RCLONE_TEST" ]] || touch "$LOCAL/RCLONE_TEST"
+    yellow "RESYNC MODE"
+    cat <<'EOF'
+Use this once, the first time this machine syncs against a Drive folder that
+already has real content on one or both sides. 'seed' refused because
+~/Projects is not empty; a plain sync refused because no baseline exists yet
+for this exact path pair.
+
+--resync copies each side's unique-or-newer file to the other side. It never
+deletes anything. Where the same path exists on both sides and differs, the
+newer modtime wins — check the dry run below for anything you would NOT want
+overwritten that way.
+
+After this, every future sync is just: 42sync
+EOF
+    echo
+    read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
+    run_bisync "${COMMON[@]}" --resync --dry-run
+    echo
+    yellow "Above is what WOULD happen. Nothing has changed yet."
+    read -r -p "Type RESYNC to apply it for real: " reply || true
+    [[ "$reply" == "RESYNC" ]] || die "Aborted — nothing was changed."
+    run_bisync "${COMMON[@]}" --resync
+    green "Resynced. From now on just run: 42sync"
     ;;
 
   check)
@@ -434,11 +474,27 @@ EOF
 
     rule_for()  { printf -- '- /%s/**' "$1"; }
     excluded_names() { grep -E '^- /' "$LOCAL_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
-    local_names()    { find "$LOCAL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort; }
+    # A bash glob, not `find -printf '%f\n'`: -printf is a GNU findutils
+    # extension that BSD find (macOS) rejects, which made this list silently
+    # empty on macOS instead of erroring.
+    local_names()    { local d; for d in "$LOCAL"/*/; do [[ -d "$d" ]] || continue; d="${d%/}"; printf '%s\n' "${d##*/}"; done | sort; }
     # Artifact filters only, never $LOCAL_FILTERS: the whole point is to show
     # what you are choosing NOT to take. stderr is left alone so rclone's config
     # password prompt reaches the terminal instead of vanishing.
     drive_names()    { rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort; }
+    # BSD stat (macOS) and GNU stat (Linux) take different flags for this, so
+    # try BSD's first and fall back to GNU's — same reason -printf needed a
+    # workaround above.
+    newest_local_file() {  # dir -> "YYYY-MM-DD HH:MM  relative/path" of the newest file, empty if none
+      local dir="$1" line epoch path
+      line="$(find "$dir" -type f -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1)"
+      [[ -n "$line" ]] || line="$(find "$dir" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1)"
+      [[ -n "$line" ]] || return 0
+      epoch="${line%% *}"; path="${line#* }"
+      printf '%s  %s\n' \
+        "$(date -r "$epoch" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%Y-%m-%d %H:%M')" \
+        "${path#"$dir"/}"
+    }
 
     want_name() {  # a single top-level folder name
       local t="${1#/}"; t="${t%/}"
@@ -508,7 +564,7 @@ Nothing to compare — a plain 'include' will just pull it down from Drive."
         show '-' "only on this machine"; show '+' "only on Drive"; show '\*' "differ"
         rm -f "$cmb"
         echo
-        newest_local="$(find "$LOCAL/$t" -type f -printf '%TY-%Tm-%Td %TH:%TM  %P\n' 2>/dev/null | sort -r | head -1)"
+        newest_local="$(newest_local_file "$LOCAL/$t")"
         newest_drive="$(rclone lsl "$REMOTE/$t" --filter-from "$FILTERS" | sort -k2,3r | head -1 | awk '{print $2" "substr($3,1,5)"  "$4}')"
         printf '  %-22s %s\n' "newest here"     "${newest_local:-none}"
         printf '  %-22s %s\n' "newest on Drive" "${newest_drive:-none}"
