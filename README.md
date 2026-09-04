@@ -229,30 +229,89 @@ in there would be mirrored to Drive as a `.rclonelink` holding a per-machine pat
 
 ### Choosing what this machine carries
 
-Not every project belongs on every machine. `~/Projects` is one folder on Drive, but
-a laptop project does not need to land on a campus machine:
+Not every project belongs on every machine. `~/Projects` is one folder on Drive, but a
+laptop project does not need to land on a campus machine:
 
 ```bash
-42sync projects                     # what syncs here, and what does not
-42sync projects exclude MacApp      # stop carrying it on this machine
-42sync projects include MacApp      # start again
+42sync projects                  # what syncs here, and what does not
+42sync projects diff MacApp      # compare the two copies before deciding
+42sync projects exclude MacApp   # stop carrying it here
+42sync projects include MacApp   # carry it again
 ```
+
+```
+STATUS    FOLDER                   WHERE
+synced    42Prague                 local + Drive
+excluded  MacApp                   local + Drive    both copies exist -> projects diff MacApp
+excluded  DriveOnly                Drive only
+stale     GhostFolder              -                rule matches nothing; drop it
+```
+
+**Top-level folders under `~/Projects` only.** A rule is anchored to the sync root, so a
+deeper path is easy to get wrong and fails silently when you do — `exclude` refuses a
+name it cannot find on either side, and `list` marks a rule that matches nothing as
+`stale`.
 
 An exclusion is **not** a deletion and not a filter on Drive. The remote copy is simply
 never looked at: not transferred, not deleted, left exactly as it is, so the machine
 that owns that project keeps syncing it normally. Re-include it and the next sync pulls
-it back down — no `--resync`, no conflict, provided you do not also have a diverging
-copy locally.
+it back down — no `--resync` needed.
 
-Excluding something that is already on this machine leaves the files on disk; they just
-stop syncing. Delete them yourself to reclaim space, and that deletion will not reach
-Drive, because the path is filtered out by then.
+Excluding something already on this machine leaves the files on disk; they just stop
+syncing. Delete them yourself to reclaim space, and that deletion will not reach Drive,
+because the path is filtered out by then.
+
+#### Before re-including a folder that exists on both sides
+
+This is the one case that can get untidy, so there is a command for it:
+
+```bash
+42sync projects diff MacApp
+```
+
+It compares real content — identical, only here, only on Drive, differing — shows the
+newest change on each side, and then says plainly which of four situations you are in.
+If only one side has changes, including it just moves them across. If **both** sides
+have changes, bisync will do a genuine two-way merge: files changed on one side move,
+files changed on both become `.conflict` pairs for you to resolve by hand. Nothing is
+lost either way, but `diff` lets you pick a winner first with a one-way `rclone sync`
+instead, and prints the exact command.
+
+`diff` is read-only and ignores the exclusion, so it works on a folder you are not
+currently syncing.
 
 The selection lives in `~/.config/rclone/projects-local.txt`, which is **per-machine and
 never synced** — that is the whole point. It is deliberately a different file from the
 artifact filters below, because `42sync orphans` treats everything the artifact filters
 exclude as junk on Drive and offers to delete it. A project you are keeping on Drive on
 purpose must never appear in that list.
+
+#### Deleting a folder from Drive
+
+```bash
+42sync projects exclude MacApp    # first: protect the local copy
+42sync projects delete  MacApp    # then: remove it from Drive
+```
+
+The order matters, and the command enforces it. If a folder is **still syncing** and a
+copy is on this machine, deleting it from Drive would make the next `42sync` read that
+as "deleted on Path2" and remove your local copy too. `delete` refuses in that case and
+tells you to exclude it first. Once excluded, the path is filtered out and nothing
+propagates in either direction, so the local copy is safe.
+
+`delete` shows the object count and size, warns that this removes the folder **for every
+machine**, runs a `--dry-run` purge, and makes you type the folder name before doing
+anything. It is a terminal command — no web interface involved. The exclusion works only
+because filters hide the path from *sync*; `rclone purge` addresses the remote path
+directly and never reads them.
+
+Afterwards the exclusion rule is left in place on purpose: with the folder gone from
+Drive, that rule is now the only thing stopping the next sync from uploading your local
+copy straight back up.
+
+The one case that does need drive.google.com is a purge failing with
+`appNotAuthorizedToChild` — that folder holds something rclone did not create, and under
+the `drive.file` scope no rclone command can remove it.
 
 Filters: `~/.config/rclone/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
 caches — shared intent on every machine, created on first run, yours to edit)

@@ -419,103 +419,259 @@ EOF
     echo "bisync is unaffected — these files were never in its listings."
     ;;
 
-  # Choosing what this machine carries. An exclusion here is not a deletion and
-  # not a filter on Drive: the remote copy is simply never looked at, so another
-  # machine keeps syncing it normally. Verified both directions -- excluding
-  # leaves the Drive copy frozen and intact, re-including pulls it back down
-  # with no conflict and no --resync.
+  # Choosing what this machine carries, one top-level folder under $LOCAL at a
+  # time. That is the only granularity offered on purpose: a rule is anchored to
+  # the sync root, so a deeper path is easy to get wrong and fails silently when
+  # you do.
+  #
+  # An exclusion is not a deletion and not a filter on Drive. The remote copy is
+  # simply never looked at, so another machine keeps syncing it normally.
+  # Verified both ways: excluding leaves the Drive copy frozen and intact,
+  # re-including pulls it back with no conflict and no --resync.
   projects)
     SUB="${2:-list}"
     TARGET="${3:-}"
 
-    excluded_paths() { grep -E '^- /' "$LOCAL_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
+    rule_for()  { printf -- '- /%s/**' "$1"; }
+    excluded_names() { grep -E '^- /' "$LOCAL_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
+    local_names()    { find "$LOCAL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort; }
+    # Artifact filters only, never $LOCAL_FILTERS: the whole point is to show
+    # what you are choosing NOT to take. stderr is left alone so rclone's config
+    # password prompt reaches the terminal instead of vanishing.
+    drive_names()    { rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort; }
 
-    # Note the `--` on every grep whose pattern comes from a variable: project
-    # names here really do start with a dash (-1_PiscineReloaded), and a rule
-    # line always does, so grep would read them as options.
-    norm() {  # validate and normalise a project path
+    want_name() {  # a single top-level folder name
       local t="${1#/}"; t="${t%/}"
-      [[ -n "$t" ]]                || die "Give a project path, e.g. 42sync projects exclude MacApp"
-      [[ "$t" != *..* ]]           || die "Refusing a path containing '..': $1"
+      [[ -n "$t" ]]      || die "Which folder? Try: 42sync projects"
+      [[ "$t" != */* ]]  || die "Only top-level folders under $LOCAL are managed here.
+Got '$1'. Use just the folder name, e.g. '${t%%/*}'."
       printf '%s' "$t"
     }
 
     case "$SUB" in
       list)
-        excl="$(excluded_paths)"
-        yellow "What this machine syncs, under $LOCAL"
+        excl="$(excluded_names)"; loc="$(local_names)"; drv="$(drive_names)"
         echo
-        printf '  %-9s %s\n' STATUS PROJECT
-        # Top-level entries on each side. Drive is listed with the artifact
-        # filters only, so excluded projects still appear -- the point is to
-        # show what you are choosing NOT to take.
-        local_dirs="$(find "$LOCAL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)"
-        # stderr left alone on purpose: rclone asks for the config password on
-        # stderr, and hiding it turns this into a silent hang.
-        drive_dirs="$(rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort)"
+        printf '  %-9s %-24s %-16s %s\n' STATUS FOLDER WHERE ''
         while IFS= read -r name; do
           [[ -n "$name" ]] || continue
-          where=""
-          grep -qxF -- "$name" <<<"$local_dirs" && where="local"
-          grep -qxF -- "$name" <<<"$drive_dirs" && where="${where:+$where+}Drive"
+          here=0; there=0
+          grep -qxF -- "$name" <<<"$loc" && here=1
+          grep -qxF -- "$name" <<<"$drv" && there=1
+          where="local + Drive"; (( here )) || where="Drive only"; (( there )) || where="local only"
           if grep -qxF -- "$name" <<<"$excl"; then
-            printf '  \033[33m%-9s\033[0m %-28s %s\n' excluded "$name" "(${where:-Drive only}, kept there)"
+            if (( here == 0 && there == 0 )); then
+              printf '  \033[33m%-9s\033[0m %-24s %-16s %s\n' stale "$name" "-" "rule matches nothing; drop it"
+            elif (( here && there )); then
+              printf '  \033[33m%-9s\033[0m %-24s %-16s %s\n' excluded "$name" "$where" "both copies exist -> projects diff $name"
+            else
+              printf '  \033[33m%-9s\033[0m %-24s %-16s\n' excluded "$name" "$where"
+            fi
           else
-            printf '  \033[32m%-9s\033[0m %-28s %s\n' synced "$name" "(${where:-?})"
+            printf '  \033[32m%-9s\033[0m %-24s %-16s\n' synced "$name" "$where"
           fi
-        done < <(printf '%s\n%s\n%s\n' "$local_dirs" "$drive_dirs" "$excl" | grep -v '^$' | sort -u)
-        # Anything excluded deeper than the top level would be missed above.
-        while IFS= read -r e; do
-          [[ -n "$e" && "$e" == */* ]] && printf '  \033[33m%-9s\033[0m %s\n' excluded "$e"
-        done <<<"$excl"
-        echo
-        echo "  42sync projects exclude <path>   stop syncing it here (stays on Drive)"
-        echo "  42sync projects include <path>   start syncing it here again"
+        done < <(printf '%s\n%s\n%s\n' "$loc" "$drv" "$excl" | grep -v '^$' | sort -u)
+        cat <<EOF
+
+  42sync projects include <folder>   carry it on this machine (alias: add)
+  42sync projects exclude <folder>   stop carrying it here; Drive copy untouched
+  42sync projects diff    <folder>   compare the two copies before you decide
+  42sync projects delete  <folder>   remove it from Drive, for every machine
+EOF
         logmsg "RESULT: listed"
         ;;
 
+      diff)
+        t="$(want_name "$TARGET")"
+        [[ -d "$LOCAL/$t" ]] || die "Not on this machine: $LOCAL/$t
+Nothing to compare — a plain 'include' will just pull it down from Drive."
+        yellow "Comparing  $LOCAL/$t   <->   $REMOTE/$t"
+        echo "Reading both sides in full; this takes a moment and changes nothing."
+        echo
+        cmb="$(mktemp)"
+        # Artifact filters only, so an excluded folder is still comparable.
+        rclone check "$LOCAL/$t" "$REMOTE/$t" \
+          --filter-from "$FILTERS" --links --combined "$cmb" || true
+        same=$(grep -c '^= ' "$cmb" || true)
+        onlyl=$(grep -c '^- ' "$cmb" || true)
+        onlyr=$(grep -c '^+ ' "$cmb" || true)
+        diffr=$(grep -c '^\* ' "$cmb" || true)
+        printf '  %-22s %s\n' "identical"            "$same"
+        printf '  %-22s %s\n' "only on this machine" "$onlyl"
+        printf '  %-22s %s\n' "only on Drive"        "$onlyr"
+        printf '  %-22s %s\n' "differ"               "$diffr"
+        { echo "--- combined report ---"; cat "$cmb"; } >> "$LOG"
+        show() { local m="$1" label="$2" n
+                 n=$(grep -c "^$m " "$cmb" || true); (( n )) || return 0
+                 echo; echo "  $label:"; grep "^$m " "$cmb" | sed "s/^$m /    /" | head -15
+                 (( n > 15 )) && echo "    ... and $((n-15)) more — full list in the log"; return 0; }
+        show '-' "only on this machine"; show '+' "only on Drive"; show '\*' "differ"
+        rm -f "$cmb"
+        echo
+        newest_local="$(find "$LOCAL/$t" -type f -printf '%TY-%Tm-%Td %TH:%TM  %P\n' 2>/dev/null | sort -r | head -1)"
+        newest_drive="$(rclone lsl "$REMOTE/$t" --filter-from "$FILTERS" | sort -k2,3r | head -1 | awk '{print $2" "substr($3,1,5)"  "$4}')"
+        printf '  %-22s %s\n' "newest here"     "${newest_local:-none}"
+        printf '  %-22s %s\n' "newest on Drive" "${newest_drive:-none}"
+        echo
+        if (( onlyl == 0 && diffr == 0 && onlyr == 0 )); then
+          green "Identical. Safe to include — nothing will move."
+        elif (( onlyl == 0 && diffr == 0 )); then
+          green "Drive is ahead; this machine has nothing the other side lacks."
+          echo "Including it will simply pull the newer files down."
+        elif (( onlyr == 0 && diffr == 0 )); then
+          green "This machine is ahead; Drive has nothing this side lacks."
+          echo "Including it will simply push your files up."
+        else
+          yellow "Both sides have changes the other does not."
+          cat <<EOF
+
+Including it makes bisync do a genuine two-way merge: a file changed on only
+one side moves across, but a file changed on BOTH becomes a .conflict pair for
+you to resolve by hand. That is safe — nothing is lost — just untidy.
+
+To pick a winner first instead, one of these, with --dry-run until the list
+looks right:
+
+  take Drive's copy :  rclone sync "$REMOTE/$t" "$LOCAL/$t" --filter-from "$FILTERS" --links --dry-run
+  take this copy    :  rclone sync "$LOCAL/$t" "$REMOTE/$t" --filter-from "$FILTERS" --links --dry-run
+
+'rclone sync' is one-way and deletes on the destination whatever the source
+lacks. Read the dry run carefully before dropping the flag.
+EOF
+        fi
+        echo
+        echo "Then:  42sync projects include $t"
+        logmsg "RESULT: diff same=$same onlyLocal=$onlyl onlyDrive=$onlyr differ=$diffr"
+        ;;
+
+      include|add)
+        t="$(want_name "$TARGET")"
+        rule="$(rule_for "$t")"
+        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
+          tmpf="$(mktemp)"
+          grep -vxF -- "$rule" "$LOCAL_FILTERS" > "$tmpf" && mv "$tmpf" "$LOCAL_FILTERS"
+          logmsg "included: $t"
+          green "Now syncing on this machine: $t"
+          if [[ -d "$LOCAL/$t" ]]; then
+            echo
+            yellow "A copy already exists here. If it has drifted from Drive, bisync will"
+            echo "produce .conflict pairs rather than pick a side. Worth checking first:"
+            echo "  42sync projects diff $t"
+          else
+            echo "The next sync pulls it down from Drive."
+          fi
+        else
+          green "$t was already syncing — nothing to do."
+        fi
+        echo
+        echo "Check before you sync:  42sync check"
+        ;;
+
       exclude)
-        t="$(norm "$TARGET")"
-        rule="- /$t/**"
+        t="$(want_name "$TARGET")"
+        # Catch the silent-no-op: a name that exists on neither side is almost
+        # always a typo or a path given at the wrong level.
+        if ! grep -qxF -- "$t" <<<"$(local_names)" && ! grep -qxF -- "$t" <<<"$(drive_names)"; then
+          die "No top-level folder '$t' on this machine or on Drive.
+A rule for it would match nothing. Run '42sync projects' to see the real names."
+        fi
+        rule="$(rule_for "$t")"
         if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
           green "Already excluded on this machine: $t"
         else
           printf '%s\n' "$rule" >> "$LOCAL_FILTERS"
           logmsg "excluded: $t"
-          green "Excluded: $t"
+          green "No longer syncing on this machine: $t"
         fi
         echo
-        echo "The copy on Drive is untouched — not transferred, not deleted — so any"
-        echo "other machine keeps syncing it normally."
+        echo "The Drive copy is untouched — not transferred, not deleted — so any other"
+        echo "machine keeps syncing it normally."
         if [[ -d "$LOCAL/$t" ]]; then
           echo
-          yellow "$LOCAL/$t still exists on this machine."
-          echo "It will simply stop syncing. To reclaim the space, delete it yourself:"
-          echo "  rm -rf \"$LOCAL/$t\""
+          yellow "$LOCAL/$t still exists here and will simply stop syncing."
+          echo "To reclaim the space:  rm -rf \"$LOCAL/$t\""
           echo "That deletion will NOT reach Drive — the path is filtered out now."
         fi
         echo
         echo "Check before you sync:  42sync check"
         ;;
 
-      include)
-        t="$(norm "$TARGET")"
-        rule="- /$t/**"
-        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
-          tmpf="$(mktemp)"
-          grep -vxF -- "$rule" "$LOCAL_FILTERS" > "$tmpf" && mv "$tmpf" "$LOCAL_FILTERS"
-          logmsg "included: $t"
-          green "Included: $t"
+      delete)
+        t="$(want_name "$TARGET")"
+
+        # The dangerous case, and the reason this is a wrapper rather than a note
+        # in the README: if the folder is still SYNCED and still here, removing it
+        # from Drive makes the next bisync read that as "deleted on Path2" and
+        # delete your local copy too. Excluding it first is what protects it.
+        if [[ -d "$LOCAL/$t" ]] && ! grep -qxF -- "$(rule_for "$t")" "$LOCAL_FILTERS" 2>/dev/null; then
+          die "'$t' is still syncing on this machine, and a copy is here:
+  $LOCAL/$t
+
+Deleting it from Drive now would make the next '42sync' see it as deleted and
+remove your local copy as well. Stop syncing it here first:
+
+  42sync projects exclude $t
+  42sync projects delete  $t
+
+After that the local copy is safe: the path is filtered out, so nothing
+propagates in either direction."
+        fi
+
+        yellow "About to delete from Drive:  $REMOTE/$t"
+        echo
+        # No filters anywhere in this branch. Filters are what HIDE these files;
+        # purge addresses the path directly, which is why this works at all.
+        rclone size "$REMOTE/$t" | sed 's/^/  /'
+        echo
+        cat <<EOF
+This removes the folder for EVERY machine, not just this one. Any other machine
+syncing it sees the removal on its next run and deletes its own copy.
+
+Drive keeps deleted files in its trash for about 30 days.
+EOF
+        if [[ -d "$LOCAL/$t" ]]; then
           echo
-          echo "The next sync pulls it down from Drive."
-          echo "If a different copy already exists here, expect bisync to flag a conflict"
-          echo "rather than silently pick one. Check first:  42sync check"
-        else
-          green "$t was not excluded — nothing to do."
+          green "Your local copy at $LOCAL/$t is NOT touched by this,"
+          echo "and stays safe as long as '$t' remains excluded here."
+        fi
+        echo
+        read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
+        rclone purge "$REMOTE/$t" --dry-run --verbose 2>&1 | tee -a "$LOG"
+        echo
+        yellow "Nothing has been deleted yet."
+        read -r -p "Type the folder name '$t' to delete it from Drive: " reply || true
+        if [[ "$reply" != "$t" ]]; then
+          logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
+          die "Aborted — nothing was changed."
+        fi
+        logmsg "confirmed by user — purging $REMOTE/$t"
+
+        rclone purge "$REMOTE/$t" --verbose 2>&1 | tee -a "$LOG"
+        rc=${PIPESTATUS[0]}
+        if (( rc != 0 )); then
+          logmsg "RESULT: purge failed (rc=$rc)"
+          red "Purge did not complete."
+          cat <<'EOF'
+
+If the log shows 'appNotAuthorizedToChild', that folder holds something rclone
+did not create — most likely a file added through drive.google.com. Under the
+drive.file scope no rclone command can remove it. Whatever is left has to go
+through the Drive web interface.
+EOF
+          exit "$rc"
+        fi
+        logmsg "RESULT: purged $REMOTE/$t"
+        green "Deleted from Drive: $t"
+        if [[ -d "$LOCAL/$t" ]]; then
+          echo
+          echo "The exclusion rule is deliberately left in place. It is now the only"
+          echo "thing stopping the next sync from uploading your local copy straight"
+          echo "back to Drive. Remove the local folder too if you are done with it:"
+          echo "  rm -rf \"$LOCAL/$t\""
         fi
         ;;
 
-      *) die "Usage: 42sync projects [list|exclude <path>|include <path>]" ;;
+      *) die "Usage: 42sync projects [list|include <folder>|exclude <folder>|diff <folder>|delete <folder>]" ;;
     esac
     ;;
 
