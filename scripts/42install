@@ -267,8 +267,15 @@ corrupted download but not a tampered mirror:
 
   # A private keyring in the temp dir. Importing into the user'''s ~/.gnupg would be
   # a side effect they never asked for, and it would outlive this script.
+  #
+  # mkdir and chmod are separate here (rather than `mkdir -m 700`): on Windows/MSYS
+  # the directory is created under an NTFS ACL that already restricts it to the
+  # current user, but the chmod step itself can still fail there with "Permission
+  # denied" even though the mkdir succeeded — and `set -e` would then abort the
+  # whole install over a permission bit that was never the real security boundary
+  # on that filesystem.
   gnupg="$TMP/gnupg"
-  rm -rf "$gnupg"; mkdir -p -m 700 "$gnupg"
+  rm -rf "$gnupg"; mkdir -p "$gnupg"; chmod 700 "$gnupg" 2>/dev/null || true
   gpg --batch --quiet --homedir "$gnupg" --import "$RCLONE_KEY_FILE" 2>>"$LOG" \
     || die "Could not import $RCLONE_KEY_FILE — is it a valid public key?"
 
@@ -412,11 +419,14 @@ install_scripts() {
 # ---------------------------------------------------------------- shell rc ---
 
 setup_shell() {
-  local rc
-  case "${SHELL##*/}" in
+  local rc shellname
+  # Git for Windows' bash reports $SHELL as .../bash.exe, not bash — strip the
+  # extension so this matches the same way it does on Linux and macOS.
+  shellname="${SHELL##*/}"; shellname="${shellname%.exe}"
+  case "$shellname" in
     zsh)  rc="$HOME/.zshrc" ;;
     bash) rc="$HOME/.bashrc" ;;
-    *)    yellow "skip       unknown shell '${SHELL##*/}' — add $BINDIR to PATH yourself"
+    *)    yellow "skip       unknown shell '$shellname' — add $BINDIR to PATH yourself"
           return 0 ;;
   esac
   [[ -f "$rc" ]] || { (( DRY )) || : > "$rc"; }
@@ -425,7 +435,7 @@ setup_shell() {
 
   # zsh does not treat '#' as a comment interactively, so pasted commands with
   # trailing comments arrive as arguments. This has caused real confusion here.
-  if [[ "${SHELL##*/}" == zsh ]]; then
+  if [[ "$shellname" == zsh ]]; then
     ensure_line "$rc" 'setopt interactive_comments' 'interactive_comments'
   fi
 
