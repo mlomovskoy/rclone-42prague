@@ -52,11 +52,16 @@ Three habits still matter:
 ```
 README.md                    this file
 TROUBLESHOOTING.md           every error hit during setup, and the fix
-scripts/42install            installs the three below, plus rclone itself
-scripts/rclone-release-key.asc  rclone's release signing key, used by 42install
+42sync_install.sh            installs everything below, plus rclone itself
+                              (at the repo root, not scripts/, so it's the
+                              first thing visible from a fresh clone)
+scripts/rclone-release-key.asc  rclone's release signing key, used by 42sync_install.sh
 scripts/42sync               the sync wrapper (install to ~/bin)
+scripts/42projects           choose which projects sync to THIS machine (install to ~/bin)
 scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
 scripts/42password           store the config password so it stops prompting (install to ~/bin)
+scripts/42logs               list logs written by every 42* script (install to ~/bin)
+scripts/42-completions.bash  bash tab-completion for every 42* script's verbs (install to ~/bin)
 templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
 docs/                        GitHub Pages site (home / privacy / terms)
 ```
@@ -80,7 +85,7 @@ of service URL on a real domain before an OAuth app can be published out of "Tes
 | Local path | `~/Projects` |
 | Remote path | `gdrive:_projects_rclone` |
 | bisync workdir | `~/.local/state/42sync/bisync` (**not** the default `~/.cache/...`) |
-| Logs | `~/.local/state/42sync/*.log`, newest as `last.log` |
+| Logs | `~/.local/state/42sync/<script>-<verb>-<timestamp>.log`, newest per (script, verb) as `<script>-<verb>-last.log` |
 | Filters | `~/.config/rclone/projects-filters.txt` |
 
 ### Windows: `~/Projects` living somewhere else
@@ -98,6 +103,77 @@ native Windows binaries (rclone included) cannot follow — they'd see a small t
 file instead of your actual folder. A junction is a real NTFS reparse point, so
 both Git Bash and rclone resolve it transparently, in both directions, with no
 special-casing anywhere else in this toolkit.
+
+A junction also has a real limitation worth knowing before you rely on it:
+`find` on Git Bash can intermittently fail to traverse into one at all (an
+MSYS/NTFS reparse-point resolution quirk, not something this toolkit
+controls) — `42sync` works around this internally, but if you ever write your
+own commands against a junctioned `~/Projects`, pass `find -H` rather than
+plain `find` to be safe.
+
+### Windows: native Git Bash, or WSL?
+
+Everything in this repo runs natively on Windows via Git for Windows' bash —
+that's the simpler default, needs no extra install, and is what's documented
+throughout. But native Windows has real limitations a Linux environment
+doesn't. Hit directly while setting this up (each has its own
+TROUBLESHOOTING.md entry, linked there):
+
+- Creating symlinks needs either elevation or a one-time Developer
+  Mode/`secpol.msc` grant.
+- A 42 Piscine exercise with a deliberately tricky filename (containing `"`,
+  `*`, or `?`) **cannot be checked out at all** on NTFS — Windows' file APIs
+  reject those characters unconditionally, no git setting works around it.
+  The file exists in history and is viewable with `git show`, but never as an
+  actual file on disk, on any native Windows filesystem. If its `.git` index
+  entry ever gets corrupted, rebuilding the index the normal way fails on
+  this exact path too — see TROUBLESHOOTING.md for the recovery.
+- Renaming or removing a directory can fail with "Device or resource busy"
+  if your own shell is sitting inside it, or another program (an editor, an
+  indexer) has it open — Windows locks directories far more readily than
+  Linux does.
+- `find` on a junctioned `~/Projects` (see above) can intermittently fail to
+  traverse into it at all — `42sync` already works around this, but pass
+  `find -H` yourself if you ever script against it directly.
+
+Known general Windows/git friction not specifically hit by this toolkit, but
+worth knowing about if you're deciding between native and WSL:
+
+- NTFS is case-insensitive by default; two files differing only by case
+  (unlikely, but possible in someone else's contribution) would collide on
+  checkout.
+- `core.autocrlf` commonly defaults to `true` on Windows vs. `false`/`input`
+  on Linux/macOS — every text file can show as "modified" purely from
+  line-ending conversion on a fresh cross-platform checkout.
+
+If you hit any of these, or would just rather avoid them, [WSL
+(Windows Subsystem for Linux)](https://learn.microsoft.com/windows/wsl/install)
+gives you a real Linux filesystem (ext4) on the same machine:
+
+```powershell
+wsl --install
+```
+
+Needs a restart to finish, and its own one-time Linux username/password setup
+on first launch. From inside WSL, clone your repos into WSL's *own* home
+directory (e.g. `~/Projects`, not `/mnt/c/...` — that's still the same NTFS
+volume under the hood, so it doesn't solve the filename problem) and run this
+toolkit's install steps exactly as documented, just from the WSL shell
+instead of Git Bash.
+
+The WSL distro's virtual disk lives on `C:` by default
+(`%LOCALAPPDATA%\Packages\<Distro>\LocalState\ext4.vhdx`) — if your real work
+lives on another drive, you can relocate it:
+
+```powershell
+wsl --export Ubuntu ubuntu-backup.tar
+wsl --unregister Ubuntu
+wsl --import Ubuntu D:\WSL ubuntu-backup.tar
+```
+
+Native Git Bash and WSL both work — pick WSL only if you've actually hit one
+of the issues above, or want to avoid them; otherwise native stays the
+simpler choice.
 
 ### The `drive.file` scope — read this before you wonder why a file is missing
 
@@ -147,11 +223,11 @@ follow you. You need this on a genuinely fresh account, or on a machine outside 
 campus (your own laptop).
 
 ```bash
-# 1. Install rclone, 42sync and 42links into ~/bin -- no root required
+# 1. Install rclone and every 42* script into ~/bin -- no root required
 git clone https://github.com/<your-github-username>/rclone-42prague.git
 cd rclone-42prague
-./scripts/42install
-exec zsh                      # pick up the new PATH
+./42sync_install.sh apply
+exec zsh                      # pick up the new PATH (bash: pick up tab-completion too)
 
 # 2. Configure the remote
 rclone config
@@ -174,25 +250,26 @@ chmod 600 ~/.config/rclone/rclone.conf
 42sync seed
 
 # 5. Create the ~/docs and ~/repos shortcuts
-42links
+42links apply
 ```
 
-`42install` ends by printing whichever of steps 2–5 still apply on this machine, so
-you can tell what is left without re-reading this file. It downloads rclone as a plain
-binary into `~/bin` (campus machines give you no admin rights), and checks it against a
-SHA256 that has itself been PGP-verified against rclone's release key before installing
-anything — see *Verifying the rclone download* under Security notes. It deliberately
-stops short of `rclone config` and `42sync seed` — both need decisions it should not
-make for you.
+`42sync_install.sh apply` ends by printing whichever of steps 2–5 still apply on this
+machine, so you can tell what is left without re-reading this file. It downloads
+rclone as a plain binary into `~/bin` (campus machines give you no admin rights), and
+checks it against a SHA256 that has itself been PGP-verified against rclone's release
+key before installing anything — see *Verifying the rclone download* under Security
+notes. It deliberately stops short of `rclone config` and `42sync seed` — both need
+decisions it should not make for you.
 
 Re-run it any time to update the tools. It is idempotent: it only touches what has
-actually changed, and `42install check` shows what it would do without doing it.
+actually changed, and `42sync_install.sh check` shows what it would do without doing
+it. Run `./42sync_install.sh` with no arguments any time to see every verb it accepts.
 
-Every run writes `~/.local/state/42sync/install-<timestamp>.log` (see *Logs* under
-Daily use). It keeps what the terminal does not: the exact URLs fetched, `curl`'s own
-error text (it runs silent), the full gpg output, and — when a signature or checksum
-check fails — the `SHA256SUMS` as received. That evidence would otherwise die with the
-temp directory.
+Every run writes `~/.local/state/42sync/42sync_install-<mode>-<timestamp>.log` (see
+*Logs* under Daily use). It keeps what the terminal does not: the exact URLs fetched,
+`curl`'s own error text (it runs silent), the full gpg output, and — when a signature
+or checksum check fails — the `SHA256SUMS` as received. That evidence would otherwise
+die with the temp directory.
 
 `42sync seed` refuses to run against a non-empty `~/Projects`. That is deliberate —
 it exists to prevent a half-populated folder from being taken as the truth.
@@ -200,18 +277,24 @@ it exists to prevent a half-populated folder from being taken as the truth.
 ## Daily use
 
 ```bash
-42sync           # two-way sync -- sitting down, and before leaving
-42sync check     # dry run, changes nothing
-42sync verify    # compare real content: is everything local actually on Drive?
-42sync status    # local size, remote size, last run
-42sync force     # push a directory rename through (asks twice)
-42sync orphans   # delete excluded files stranded on Drive (asks twice)
-42sync orphans check   # list them and stop -- deletes nothing
-42sync projects  # choose which projects sync to THIS machine
-42sync seed      # only when ~/Projects is empty (fresh account / other machine)
-42sync resync    # only when ~/Projects already has content AND no baseline exists yet
-                 # (e.g. a laptop joining a Drive folder a campus machine already seeded)
+42sync apply           # two-way sync -- sitting down, and before leaving
+42sync check           # dry run of apply, changes nothing
+42sync verify          # compare real content: is everything local actually on Drive?
+42sync status          # local size, remote size, last run
+42sync force-check     # preview pushing a directory rename through the delete guard
+42sync force-apply     # apply it for real (asks first, unless given the FORCE argument)
+42sync orphans-check   # list excluded files stranded on Drive -- deletes nothing
+42sync orphans-apply   # delete them for real (asks first, unless given DELETE)
+42projects             # choose which projects sync to THIS machine (separate script)
+42sync seed            # only when ~/Projects is empty (fresh account / other machine)
+42sync resync-check    # only when ~/Projects already has content AND no baseline exists yet
+42sync resync-apply    # (e.g. a laptop joining a Drive folder a campus machine already seeded)
 ```
+
+Run any of `42sync`, `42links`, `42password`, `42sync_install.sh` or `42projects` with
+no arguments to see the full verb list with descriptions — it prints and exits,
+changing nothing and writing no log. In bash, after `42sync_install.sh apply` has run
+once and you've opened a new shell, `<TAB>` after any script name completes its verbs.
 
 ### `check` and `verify` answer different questions
 
@@ -236,10 +319,11 @@ pointing into the synced tree. They live in `$HOME`, so on a campus machine they
 follow you and you only need this once:
 
 ```bash
-42links          # create or refresh the links
-42links check    # dry run, changes nothing
-42links status   # show current state, including broken links
-42links clean    # remove only the links pointing into 42Prague/
+42links apply         # create or refresh the links
+42links check         # dry run, changes nothing
+42links status        # show current state, including broken links
+42links clean-check   # preview removing only the links pointing into 42Prague/
+42links clean-apply   # remove them for real
 ```
 
 Both scripts refuse to touch a real directory sitting where a link would go, and
@@ -249,22 +333,33 @@ in there would be mirrored to Drive as a `.rclonelink` holding a per-machine pat
 ### Choosing what this machine carries
 
 Not every project belongs on every machine. `~/Projects` is one folder on Drive, but a
-laptop project does not need to land on a campus machine:
+laptop project does not need to land on a campus machine. This is `42projects`, a
+separate script from `42sync` since it manages *what* syncs rather than doing the
+sync itself:
 
 ```bash
-42sync projects                  # what syncs here, and what does not
-42sync projects diff MacApp      # compare the two copies before deciding
-42sync projects exclude MacApp   # stop carrying it here
-42sync projects include MacApp   # carry it again
+42projects list                    # numbered table: what syncs here, and what does not
+42projects diff    <ID>            # compare the two copies before deciding
+42projects exclude <ID>            # stop carrying it here
+42projects include <ID>            # carry it again
 ```
 
+`<ID>` can always be left out — every verb shows the current list and prompts for one
+if you do:
+
 ```
-STATUS    FOLDER                   WHERE
-synced    42Prague                 local + Drive
-excluded  MacApp                   local + Drive    both copies exist -> projects diff MacApp
-excluded  DriveOnly                Drive only
-stale     GhostFolder              -                rule matches nothing; drop it
+  ID   STATUS    FOLDER                   WHERE
+  1    synced    42Prague                 local + Drive
+  2    excluded  MacApp                   local + Drive    both copies exist -> 42projects diff 2
+  3    excluded  DriveOnly                Drive only
+  4    stale     GhostFolder              -                rule matches nothing; drop it
 ```
+
+IDs are assigned fresh each time `list` runs (stable ordering, but they can shift if
+the folder set itself changes between runs) — to guard against acting on a
+stale, memorized ID from an earlier listing, every ID-driven command echoes which
+folder it resolved the ID to (`ID 2 -> MacApp`) as its first line of output, before
+doing anything else.
 
 **Top-level folders under `~/Projects` only.** A rule is anchored to the sync root, so a
 deeper path is easy to get wrong and fails silently when you do — `exclude` refuses a
@@ -285,7 +380,7 @@ because the path is filtered out by then.
 This is the one case that can get untidy, so there is a command for it:
 
 ```bash
-42sync projects diff MacApp
+42projects diff 2
 ```
 
 It compares real content — identical, only here, only on Drive, differing — shows the
@@ -301,28 +396,29 @@ currently syncing.
 
 The selection lives in `~/.config/rclone/projects-local.txt`, which is **per-machine and
 never synced** — that is the whole point. It is deliberately a different file from the
-artifact filters below, because `42sync orphans` treats everything the artifact filters
-exclude as junk on Drive and offers to delete it. A project you are keeping on Drive on
-purpose must never appear in that list.
+artifact filters below, because `42sync orphans-check`/`orphans-apply` treat everything
+the artifact filters exclude as junk on Drive and offer to delete it. A project you are
+keeping on Drive on purpose must never appear in that list.
 
 #### Deleting a folder from Drive
 
 ```bash
-42sync projects exclude MacApp    # first: protect the local copy
-42sync projects delete  MacApp    # then: remove it from Drive
+42projects exclude 2         # first: protect the local copy
+42projects delete-check 2    # preview
+42projects delete-apply 2    # then: remove it from Drive for real
 ```
 
 The order matters, and the command enforces it. If a folder is **still syncing** and a
-copy is on this machine, deleting it from Drive would make the next `42sync` read that
-as "deleted on Path2" and remove your local copy too. `delete` refuses in that case and
-tells you to exclude it first. Once excluded, the path is filtered out and nothing
-propagates in either direction, so the local copy is safe.
+copy is on this machine, deleting it from Drive would make the next `42sync apply` read
+that as "deleted on Path2" and remove your local copy too. `delete-check`/`delete-apply`
+refuse in that case and tell you to exclude it first. Once excluded, the path is
+filtered out and nothing propagates in either direction, so the local copy is safe.
 
-`delete` shows the object count and size, warns that this removes the folder **for every
-machine**, runs a `--dry-run` purge, and makes you type the folder name before doing
-anything. It is a terminal command — no web interface involved. The exclusion works only
-because filters hide the path from *sync*; `rclone purge` addresses the remote path
-directly and never reads them.
+`delete-apply` shows the object count and size, warns that this removes the folder **for
+every machine**, runs a `--dry-run` purge, and (unless given the confirmation argument)
+makes you type the folder name before doing anything for real. It is a terminal
+command — no web interface involved. The exclusion works only because filters hide the
+path from *sync*; `rclone purge` addresses the remote path directly and never reads them.
 
 Afterwards the exclusion rule is left in place on purpose: with the folder gone from
 Drive, that rule is now the only thing stopping the next sync from uploading your local
@@ -338,26 +434,35 @@ created on first run, yours to edit)
 
 ### Logs
 
-Every run of every script writes its own log and prints the path as its **last line**,
-whether it succeeded, failed or was aborted — with one deliberate exception,
-`42sync logs`, which exists to list the logs and would otherwise change what it
-reports:
+Every run of every script that does something writes its own log and prints the path
+as its **last line**, whether it succeeded, failed or was aborted — with the
+deliberate exception of purely informational invocations (`42projects list`, a bare
+no-argument call, `42logs` itself), which write nothing: listing things would leave a
+trail of entries that record nothing but having looked.
 
 ```
-Log: /home/<login>/.local/state/42sync/verify-2026-08-31-142752.log
+Log: /home/<login>/.local/state/42sync/42sync-verify-2026-08-31-142752.log
 ```
 
-All three scripts write to `~/.local/state/42sync/`, so there is one place to look:
+Every script writes to `~/.local/state/42sync/`, so there is one place to look. Logs
+are named `<script>-<verb>-<timestamp>.log` — the script name stays in the filename
+even though the verb you type is often short (`apply`, `check`) and shared across
+scripts, so files from different scripts in the same directory never collide:
 
 | Prefix | Written by |
 |---|---|
-| `sync-` `check-` `verify-` `force-` `orphans-` `seed-` `resync-` `status-` | `42sync`, named after the mode |
-| `install-` | `42install` |
-| `links-<mode>-` | `42links` |
+| `42sync-<verb>-` | `42sync` |
+| `42projects-<verb>-` | `42projects` (not `list`, which writes nothing) |
+| `42links-<verb>-` | `42links` |
+| `42password-<verb>-` | `42password` |
+| `42sync_install-<verb>-` | `42sync_install.sh` |
 
-`last.log` symlinks to the most recent `42sync` run of any mode. Each script keeps its
-own newest 20 and prunes only its own prefixes, so none can delete another's evidence.
-`42sync logs` lists what is there, and writes nothing itself.
+`<script>-<verb>-last.log` symlinks to the most recent run of that exact
+(script, verb) pair — e.g. `42sync-force-apply-last.log`,
+`42sync_install-check-last.log` — so any one of them is directly discoverable without
+hunting the whole directory. Each script prunes only its own prefixes, keeping the
+newest 20 across all its verbs combined, so none can delete another's evidence.
+`42logs` lists everything there, and writes nothing itself.
 
 That directory is deliberately **not** `~/.cache`, which these machines wipe between
 logins — see *Where state lives* above.
@@ -391,9 +496,9 @@ longer push* below.
 
 **Renaming directories is expensive.** bisync compares by path, so renaming a folder
 reads as "every file inside was deleted, and an equal number appeared." The delete
-guard will abort. This is correct behaviour; use `42sync force` and confirm the
-dry run shows matched delete/create pairs. Reorganize *before* a sync, not between
-syncs, when you can.
+guard will abort. This is correct behaviour; run `42sync force-check` and confirm the
+dry run shows matched delete/create pairs, then `42sync force-apply`. Reorganize
+*before* a sync, not between syncs, when you can.
 
 **Repos you can no longer push.** vogsphere revokes write access once a project has
 been evaluated:
@@ -436,9 +541,9 @@ first if it's missing). It stores the password once, wires
 harmless `rclone listremotes` that it actually works before declaring success.
 
 ```bash
-42password         # set it up (or confirm it already is)
-42password check   # dry run, changes nothing
-42password force   # re-store the password (e.g. you changed it)
+42password apply       # set it up (or confirm it already is)
+42password check       # dry run, changes nothing
+42password reinstall   # re-store the password even if one is already saved (e.g. you changed it)
 ```
 
 On Linux, `secret-tool` needs a keyring daemon (`gnome-keyring` or equivalent)
@@ -465,7 +570,7 @@ protecting — more than the client secret, which alone cannot reach your data.
 
 ### Verifying the rclone download
 
-`42install` fetches a binary over the network and makes it executable, so it verifies
+`42sync_install.sh` fetches a binary over the network and makes it executable, so it verifies
 what it got before trusting it:
 
 1. Downloads the versioned zip and its `SHA256SUMS`, which rclone publishes PGP-clearsigned.
@@ -489,15 +594,15 @@ Do not take the fingerprint above on trust from this file alone. Cross-check it 
 something if you have seen it in more than one place.
 
 Verification is required, not best-effort. If the signature cannot be checked — no
-`gpg`, or a missing or replaced key file — `42install` installs nothing and says why.
-`42install check` tells you in advance whether this machine can verify.
+`gpg`, or a missing or replaced key file — `42sync_install.sh apply` installs nothing and says why.
+`42sync_install.sh check` tells you in advance whether this machine can verify.
 
 Campus machines give you no admin rights, so if `gpg` really is absent you cannot
 simply install it. To proceed anyway, accepting that only the SHA256 is checked — which
 catches a corrupted download but not a tampered mirror — opt out explicitly:
 
 ```bash
-INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
+INSTALL_ALLOW_UNSIGNED=1 ./42sync_install.sh apply
 ```
 
 It has to be typed. That is the point: skipping verification should be a decision, not

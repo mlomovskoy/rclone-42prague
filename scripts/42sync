@@ -1,29 +1,89 @@
 #!/usr/bin/env bash
 #
 # 42sync — two-way sync of ~/Projects with gdrive:_projects_rclone via rclone bisync.
+# Run with no arguments to see every verb this script accepts.
 #
-#   42sync           normal run: two-way sync
-#   42sync check     dry run: show what WOULD change, touch nothing
-#   42sync verify    compare real content: is everything local actually on Drive?
-#   42sync force     push through a rename/reorg (bypasses the delete guard, asks first)
-#   42sync orphans        delete excluded files stranded on Drive (asks twice)
-#   42sync orphans check  list them and stop -- deletes nothing
-#   42sync seed      ~/Projects is empty: pull from Drive, then set the baseline
-#   42sync resync    first sync when BOTH sides already have real content (one-time)
-#   42sync status    local size, remote size, recent runs
-#   42sync logs      list kept logs (the one mode that writes no log of its own)
-#   42sync projects  choose which projects sync to THIS machine
-#
-# Install:  mkdir -p ~/bin && cp 42sync ~/bin/ && chmod +x ~/bin/42sync
+# Project selection (what syncs to THIS machine) lives in: 42projects
+# Log listing (across every 42* script) lives in: 42logs
 
 set -uo pipefail
+
+# Every verb this script accepts, in the order shown by print_verbs -- also
+# the single source of truth for mode validation and for `__complete` (bash
+# tab-completion reads this via `42sync __complete`, see 42-completions.bash).
+VERBS=(
+  apply check
+  dirty-apply dirty-check
+  verify
+  force-check force-apply
+  orphans-check orphans-apply
+  resync-check resync-apply
+  seed status
+)
+
+print_verbs() {
+  cat <<'EOF'
+42sync <verb>
+
+  apply                  real two-way sync, skipping any repo with uncommitted changes
+  check                  dry run of apply -- shows what would happen, changes nothing
+
+  dirty-apply [DIRTY]    like apply, but includes dirty repos too. DANGEROUS for a repo
+                         whose .git has genuinely diverged from Drive -- see
+                         TROUBLESHOOTING.md, "A repo's .git got corrupted by a bisync
+                         conflict". Only for grabbing a same-machine backup of an
+                         in-progress edit, never as a routine habit.
+  dirty-check            dry run of dirty-apply
+
+  verify                 compare real content: is everything local actually on Drive?
+
+  force-check            preview pushing a rename/reorg through the delete guard
+  force-apply [FORCE]    apply it for real
+
+  orphans-check          list excluded files stranded on Drive; deletes nothing
+  orphans-apply [DELETE] delete them for real
+
+  resync-check           preview the first sync when both sides already have content
+  resync-apply [RESYNC]  apply it for real
+
+  seed                   ~/Projects is empty: pull from Drive, then set the baseline
+  status                 local size, remote size, recent runs
+
+[WORD] arguments are optional: give them to apply non-interactively (for
+scripting), omit them to get the usual dry-run-then-typed-prompt flow.
+
+Project selection (what syncs to THIS machine): 42projects
+Log listing (across every 42* script):          42logs
+EOF
+}
+
+# Checked first, before any side effect below (creating state dirs, default
+# filter files, etc.) -- both this and `__complete` must produce ONLY their
+# own output on stdout. `__complete` in particular is parsed verbatim by
+# bash's completion function (42-completions.bash); anything else printed
+# before it runs -- e.g. the old "Created filter file: ..." notice used to
+# fire here on a brand-new machine's very first TAB press -- would leak into
+# the candidate list.
+if [[ $# -eq 0 ]]; then
+  print_verbs
+  exit 0
+fi
+
+MODE="$1"
+
+# Hidden, not for humans -- bash tab-completion calls this (see
+# 42-completions.bash).
+if [[ "$MODE" == __complete ]]; then
+  printf '%s\n' "${VERBS[@]}"
+  exit 0
+fi
 
 LOCAL="$HOME/Projects"
 REMOTE="gdrive:_projects_rclone"
 FILTERS="$HOME/.config/rclone/projects-filters.txt"
 
 # Which projects sync to THIS machine. Deliberately a SEPARATE file from
-# $FILTERS, not another section in it, for one reason: '42sync orphans' treats
+# $FILTERS, not another section in it, for one reason: 'orphans-apply' treats
 # everything excluded by $FILTERS as junk on Drive that nothing will ever manage
 # and offers to delete it. Project selections are the opposite — files kept on
 # Drive on purpose, usually by another machine. Mixing the two would point the
@@ -59,7 +119,7 @@ fi
 
 if [[ ! -f "$LOCAL_FILTERS" ]]; then
   cat > "$LOCAL_FILTERS" <<'EOF'
-# Projects NOT synced to this machine. Managed by: 42sync projects
+# Projects NOT synced to this machine. Managed by: 42projects
 #
 # Excluding a path here stops it coming down to this machine. The copy on Drive
 # is left completely alone -- not transferred, not deleted -- so another machine
@@ -70,14 +130,14 @@ EOF
 fi
 
 # Both filter files, in one place, for every command that must see what this
-# machine actually syncs. NOT used by 'orphans' -- see the note on LOCAL_FILTERS.
+# machine actually syncs. NOT used by 'orphans-*' -- see the note on LOCAL_FILTERS.
 FILTER_ARGS=(--filter-from "$FILTERS")
 if grep -qE '^- ' "$LOCAL_FILTERS" 2>/dev/null; then
   FILTER_ARGS+=(--filter-from "$LOCAL_FILTERS")
 fi
 
 # --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
-# --max-delete    aborts if >25% of files would vanish ('force' bypasses this).
+# --max-delete    aborts if >25% of files would vanish ('force-apply' bypasses this).
 # --links         stores symlinks as .rclonelink files instead of skipping them.
 COMMON=(
   --workdir "$WORKDIR"
@@ -98,43 +158,38 @@ die()    { red "$*" >&2; exit 1; }
 # delete anything?" without needing to have watched it happen.
 logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
-MODE="${1:-sync}"
-
 # Validate before building a log name, so a typo does not leave a stray
 # bogus-<timestamp>.log behind.
-case "$MODE" in
-  sync|check|verify|force|orphans|projects|seed|resync|status|logs) ;;
-  *) die "Usage: 42sync [sync|check|verify|force|orphans [check]|projects|seed|resync|status|logs]" ;;
-esac
+valid=0
+for v in "${VERBS[@]}"; do [[ "$MODE" == "$v" ]] && valid=1 && break; done
+(( valid )) || die "Unknown verb '$MODE'. Run '42sync' with no arguments to see the list."
 
 # Every run gets its own log, whatever the mode and however it ends. Created
 # here rather than per-branch so the file always exists and the path printed on
-# exit always points at something.
-#
-# 'logs' is the one exception: it exists to list the logs, so writing one would
-# change the very thing it reports and leave a trail of entries that record
-# nothing but having looked.
-LOG=""
-if [[ "$MODE" != logs ]]; then
-  LOG="$LOGDIR/$MODE-$(date +%Y-%m-%d-%H%M%S).log"
-  : > "$LOG"
-  ln -sfn "$LOG" "$LOGDIR/last.log"
-  logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
-fi
+# exit always points at something. Prefixed with the script's own name so logs
+# stay identifiable even though the verb itself (e.g. "apply") is shared with
+# other scripts in the same $LOGDIR.
+LOG="$LOGDIR/42sync-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+: > "$LOG"
+ln -sfn "$LOG" "$LOGDIR/42sync-$MODE-last.log"
+logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
 
 # Printed on EVERY exit path — success, failure, abort — so you never have to
 # wonder where the evidence went. A trap rather than a line in each branch:
-# there are nine ways out of this script and they were not all covering it.
+# there are many ways out of this script and they were not all covering it.
 # Rotation happens here too: every mode that writes a log also rotates, including
 # the ones that run no rclone at all, so pruning cannot live in the sync paths only.
 on_exit() { prune_logs; printf '\033[32mLog: %s\033[0m\n' "$LOG"; }
-[[ -n "$LOG" ]] && trap on_exit EXIT
+trap on_exit EXIT
 
-# Prunes this script's logs only, by mode prefix. 42install and 42links share
-# $LOGDIR and prune their own, so no script deletes another's evidence.
+# Prunes this script's logs only, by verb, keeping the newest KEEP_LOGS across
+# all of them combined. 42links/42password/42sync_install.sh/42projects share
+# $LOGDIR and prune their own, so no script deletes another's evidence. Every
+# verb is its own exact brace entry (not a shared stem like "force-*") so
+# force-check and force-apply logs can never double-match each other's glob.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOGDIR"/{sync,check,verify,force,orphans,seed,resync,status,logs,mirror}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOGDIR"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -164,22 +219,54 @@ genuinely empty and you accept Drive as the source of truth."
 # run: work not committed at all, and commits that exist only on this machine. The
 # second is the one that bites — vogsphere revokes write access once a project has been
 # evaluated, so "just push it" is not always available. See README, Known limitations.
+#
+# Also fills the global DIRTY_REPOS array with each dirty repo's path relative
+# to $LOCAL. 'apply'/'check' use this to skip just those repos rather than
+# either silently carrying an uncommitted edit along via bisync, or aborting
+# the whole sync over a single repo someone happens to be mid-edit on.
+DIRTY_REPOS=()
 check_repos() {
-  local repo dirty ahead
+  DIRTY_REPOS=()
+  # -H: follow a symlink/junction given as the search ROOT (needed when $LOCAL
+  # itself is a junction, e.g. remapped to a different drive on Windows), but
+  # do NOT follow symlinks found deeper in the tree (a plain -L would) --
+  # those can be real repo content (a Piscine exercise's symlink test
+  # fixture), and following them risks loops or double-scanning. Found by
+  # $LOCAL's junction silently returning zero .git dirs on one run and
+  # working normally on others -- an MSYS/NTFS reparse-point quirk, not
+  # anything this script's logic controls, so -H makes it robust regardless.
+  local repo dirty ahead rel
   while IFS= read -r -d '' gitdir; do
     repo="$(dirname "$gitdir")"
+    rel="${repo#$LOCAL/}"
     dirty="$(git -C "$repo" status --porcelain 2>/dev/null)"
     ahead="$(git -C "$repo" log --oneline '@{u}..HEAD' 2>/dev/null)"
-    [[ -n "$dirty" ]] && yellow "uncommitted changes: ${repo#$LOCAL/}"
-    [[ -n "$ahead" ]] && yellow "unpushed commits ($(printf '%s\n' "$ahead" | wc -l)): ${repo#$LOCAL/}"
-  done < <(find "$LOCAL" -type d -name .git -print0 2>/dev/null)
+    if [[ -n "$dirty" ]]; then
+      yellow "uncommitted changes: $rel"
+      DIRTY_REPOS+=("$rel")
+    fi
+    [[ -n "$ahead" ]] && yellow "unpushed commits ($(printf '%s\n' "$ahead" | wc -l)): $rel"
+  done < <(find -H "$LOCAL" -type d -name .git -print0 2>/dev/null)
+}
+
+# Builds SKIP_ARGS from DIRTY_REPOS -- a transient, this-run-only exclude, not
+# written to $FILTERS or $LOCAL_FILTERS. Shared by 'apply' and 'check' so the
+# preview and the real thing always compute the exact same skip set.
+SKIP_ARGS=()
+compute_skip_args() {
+  SKIP_ARGS=()
+  local rel
+  for rel in "${DIRTY_REPOS[@]}"; do
+    SKIP_ARGS+=(--exclude "/$rel/**")
+  done
 }
 
 # Run bisync, keep the log, and translate rclone's cryptic failures.
 run_bisync() {
-  # Where this run's output starts. 'force' calls run_bisync twice into the same log,
-  # so diagnosing against the whole file would match the dry run's message and report
-  # the wrong cause for the real run's failure.
+  # Where this run's output starts. force-apply calls run_bisync twice into the
+  # same log when the confirmation word is omitted (dry run, then real), so
+  # diagnosing against the whole file would match the dry run's message and
+  # report the wrong cause for the real run's failure.
   local start=0
   [[ -f "$LOG" ]] && start=$(wc -c < "$LOG")
   rclone bisync "$LOCAL" "$REMOTE" "$@" 2>&1 | tee -a "$LOG"
@@ -199,7 +286,7 @@ That happens when:
   - a previous run was interrupted before it wrote its listings.
 
   ~/Projects empty, Drive is truth    ->  42sync seed
-  Both sides already have content     ->  42sync resync
+  Both sides already have content     ->  42sync resync-check, then resync-apply
 
 Do not reach for --resync by hand: it copies each side's unique-or-newer file
 to the other, which resurrects anything you deleted or renamed if the two
@@ -213,7 +300,7 @@ More than 25% of files would be removed. Usually this means you renamed or moved
 directories — bisync compares by path, so a rename reads as mass deletion plus
 mass creation.
 
-Check the log, then:  42sync force
+Check the log, then:  42sync force-check   (then force-apply once it looks right)
 EOF
     elif grep -q 'Access test failed' <<<"$this_run"; then
       red "Access check failed — the RCLONE_TEST marker is missing on one side."
@@ -245,20 +332,17 @@ Nothing was seeded. Fix the error above and run '42sync seed' again."
     touch "$LOCAL/RCLONE_TEST"
     rclone copy "$LOCAL/RCLONE_TEST" "$REMOTE" >/dev/null
     run_bisync "${COMMON[@]}" --resync
-    green "Seeded. From now on just run: 42sync"
+    green "Seeded. From now on just run: 42sync apply"
     ;;
 
   # For the other bootstrap case 'seed' does not cover: ~/Projects already has
   # real content (so 'seed' refuses), and no baseline exists yet for this exact
   # path pair (so plain bisync refuses too, with "cannot find prior listings").
-  # That combination used to mean hand-typing a raw rclone bisync --resync
-  # command; this mode is that command, with the same dry-run-then-confirm
-  # guard as 'force'.
-  resync)
-    warn_no_multiplexer
+  # resync-check/resync-apply are that command, split like everything else.
+  resync-check|resync-apply)
     mkdir -p "$LOCAL"
     if [[ -z "$(ls -A "$LOCAL" 2>/dev/null)" ]]; then
-      die "$LOCAL is empty — that is what 'seed' is for, not 'resync':
+      die "$LOCAL is empty — that is what 'seed' is for, not resync:
   42sync seed"
     fi
     # 'seed' creates this as part of pulling from an empty folder. Here neither
@@ -273,25 +357,45 @@ for this exact path pair.
 
 --resync copies each side's unique-or-newer file to the other side. It never
 deletes anything. Where the same path exists on both sides and differs, the
-newer modtime wins — check the dry run below for anything you would NOT want
+newer modtime wins — check the dry run for anything you would NOT want
 overwritten that way.
 
-After this, every future sync is just: 42sync
+After this, every future sync is just: 42sync apply
 EOF
     echo
-    read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
-    run_bisync "${COMMON[@]}" --resync --dry-run
-    echo
-    yellow "Above is what WOULD happen. Nothing has changed yet."
-    read -r -p "Type RESYNC to apply it for real: " reply || true
-    [[ "$reply" == "RESYNC" ]] || die "Aborted — nothing was changed."
-    run_bisync "${COMMON[@]}" --resync
-    green "Resynced. From now on just run: 42sync"
+
+    if [[ "$MODE" == resync-check ]]; then
+      warn_no_multiplexer
+      run_bisync "${COMMON[@]}" --resync --dry-run
+      green "Dry run only — nothing was changed. Run 'resync-apply' once it looks right."
+    else
+      warn_no_multiplexer
+      if [[ -n "${2:-}" ]]; then
+        [[ "$2" == "RESYNC" ]] || die "Expected RESYNC as the confirmation argument, got '$2'."
+      else
+        read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
+        run_bisync "${COMMON[@]}" --resync --dry-run
+        echo
+        yellow "Above is what WOULD happen. Nothing has changed yet."
+        read -r -p "Type RESYNC to apply it for real: " reply || true
+        [[ "$reply" == "RESYNC" ]] || die "Aborted — nothing was changed."
+      fi
+      run_bisync "${COMMON[@]}" --resync
+      green "Resynced. From now on just run: 42sync apply"
+    fi
     ;;
 
   check)
     require_local
-    run_bisync "${COMMON[@]}" --dry-run
+    check_repos
+    if (( ${#DIRTY_REPOS[@]} )); then
+      yellow "Would skip ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes (same as apply):"
+      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      compute_skip_args
+      run_bisync "${COMMON[@]}" "${SKIP_ARGS[@]}" --dry-run
+    else
+      run_bisync "${COMMON[@]}" --dry-run
+    fi
     green "Dry run only — nothing was changed."
     ;;
 
@@ -339,7 +443,7 @@ EOF
 Most often this just means you have edited something since the last sync:
 
   42sync check     see what it would send
-  42sync           send it
+  42sync apply     send it
   42sync verify    confirm it landed
 
 If '42sync check' reports "No changes found" while this still fails, then the
@@ -350,30 +454,40 @@ EOF
     fi
     ;;
 
-  force)
+  force-check|force-apply)
     require_local
-    warn_no_multiplexer
     yellow "FORCE MODE"
     cat <<'EOF'
 Use this only when bisync aborted with "too many deletes" because YOU renamed or
 moved directories. bisync compares by path, so a rename looks like mass deletion
 plus mass creation — the guard is doing its job, and force tells it to proceed.
 
-Do NOT use force if the deletions surprise you. Investigate instead.
+Do NOT use this if the deletions surprise you. Investigate instead.
 
-A dry run follows. Check that every "File was deleted" line is an OLD path you
-renamed, and every "File is new" line is its replacement.
+Check that every "File was deleted" line is an OLD path you renamed, and every
+"File is new" line is its replacement.
 EOF
     echo
-    read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
-    run_bisync "${COMMON[@]}" --force --dry-run
-    echo
-    yellow "Above is what WOULD happen. Nothing has changed yet."
-    read -r -p "Type FORCE to apply it for real: " reply || true
-    [[ "$reply" == "FORCE" ]] || die "Aborted — nothing was changed."
-    check_repos
-    run_bisync "${COMMON[@]}" --force
-    green "Forced sync complete. Normal '42sync' works again from here."
+
+    if [[ "$MODE" == force-check ]]; then
+      run_bisync "${COMMON[@]}" --force --dry-run
+      green "Dry run only — nothing was changed. Run 'force-apply' once it looks right."
+    else
+      warn_no_multiplexer
+      if [[ -n "${2:-}" ]]; then
+        [[ "$2" == "FORCE" ]] || die "Expected FORCE as the confirmation argument, got '$2'."
+      else
+        read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
+        run_bisync "${COMMON[@]}" --force --dry-run
+        echo
+        yellow "Above is what WOULD happen. Nothing has changed yet."
+        read -r -p "Type FORCE to apply it for real: " reply || true
+        [[ "$reply" == "FORCE" ]] || die "Aborted — nothing was changed."
+      fi
+      check_repos
+      run_bisync "${COMMON[@]}" --force
+      green "Forced sync complete. Normal 'apply' works again from here."
+    fi
     ;;
 
   # An excluded file is invisible to sync in BOTH directions, so anything on Drive
@@ -381,18 +495,12 @@ EOF
   # ever transfer or remove it. Only reachable by dropping --filter-from and naming
   # the same patterns as --include instead. Deliberately not part of any sync: this
   # deletes, and it should never happen as a side effect of something else.
-  orphans)
-    SUB="${2:-clean}"
-    case "$SUB" in
-      check|clean) ;;
-      *) die "Usage: 42sync orphans [check]" ;;
-    esac
+  orphans-check|orphans-apply)
     mapfile -t EXCL < <(grep -E '^- ' "$FILTERS" | sed 's/^- //')
     (( ${#EXCL[@]} )) || die "No exclude rules in $FILTERS — nothing can be orphaned."
     INC=()
     for pat in "${EXCL[@]}"; do INC+=(--include "$pat"); done
 
-    logmsg "=== 42sync orphans $SUB $(date '+%F %T') host=$(uname -n) ==="
     logmsg "remote=$REMOTE filters=$FILTERS"
     logmsg "patterns: ${EXCL[*]}"
     yellow "Exclude patterns, read from $FILTERS:"
@@ -427,25 +535,29 @@ EOF
     { echo "--- orphans found ---"; cat "$listing"; } >> "$LOG"
     rm -f "$listing"
 
-    if [[ "$SUB" == check ]]; then
+    if [[ "$MODE" == orphans-check ]]; then
       logmsg "RESULT: listed only — nothing was deleted"
-        echo
+      echo
       green "Read-only — nothing was deleted."
-      echo "To remove them:  42sync orphans"
+      echo "To remove them:  42sync orphans-apply"
       exit 0
     fi
 
-    echo
-    read -r -p "Press Enter to see the delete dry run (Ctrl-C to abort) " _ || true
-    rclone delete "$REMOTE" "${INC[@]}" --dry-run --verbose 2>&1 | tee -a "$LOG"
-    echo
-    yellow "Nothing has been deleted yet."
-    read -r -p "Type DELETE to remove them from Drive: " reply || true
-    if [[ "$reply" != "DELETE" ]]; then
-      logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
+    if [[ -n "${2:-}" ]]; then
+      [[ "$2" == "DELETE" ]] || die "Expected DELETE as the confirmation argument, got '$2'."
+    else
+      echo
+      read -r -p "Press Enter to see the delete dry run (Ctrl-C to abort) " _ || true
+      rclone delete "$REMOTE" "${INC[@]}" --dry-run --verbose 2>&1 | tee -a "$LOG"
+      echo
+      yellow "Nothing has been deleted yet."
+      read -r -p "Type DELETE to remove them from Drive: " reply || true
+      if [[ "$reply" != "DELETE" ]]; then
+        logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
         die "Aborted — nothing was changed."
+      fi
     fi
-    logmsg "confirmed by user — deleting $n file(s)"
+    logmsg "confirmed — deleting $n file(s)"
 
     rclone delete "$REMOTE" "${INC[@]}" --verbose 2>&1 | tee -a "$LOG"
     rc=${PIPESTATUS[0]}
@@ -463,287 +575,6 @@ EOF
     echo "bisync is unaffected — these files were never in its listings."
     ;;
 
-  # Choosing what this machine carries, one top-level folder under $LOCAL at a
-  # time. That is the only granularity offered on purpose: a rule is anchored to
-  # the sync root, so a deeper path is easy to get wrong and fails silently when
-  # you do.
-  #
-  # An exclusion is not a deletion and not a filter on Drive. The remote copy is
-  # simply never looked at, so another machine keeps syncing it normally.
-  # Verified both ways: excluding leaves the Drive copy frozen and intact,
-  # re-including pulls it back with no conflict and no --resync.
-  projects)
-    SUB="${2:-list}"
-    TARGET="${3:-}"
-
-    rule_for()  { printf -- '- /%s/**' "$1"; }
-    excluded_names() { grep -E '^- /' "$LOCAL_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
-    # A bash glob, not `find -printf '%f\n'`: -printf is a GNU findutils
-    # extension that BSD find (macOS) rejects, which made this list silently
-    # empty on macOS instead of erroring.
-    local_names()    { local d; for d in "$LOCAL"/*/; do [[ -d "$d" ]] || continue; d="${d%/}"; printf '%s\n' "${d##*/}"; done | sort; }
-    # Artifact filters only, never $LOCAL_FILTERS: the whole point is to show
-    # what you are choosing NOT to take. stderr is left alone so rclone's config
-    # password prompt reaches the terminal instead of vanishing.
-    drive_names()    { rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort; }
-    # BSD stat (macOS) and GNU stat (Linux, and Windows via Git Bash's MSYS
-    # coreutils) take different flags for this. Try GNU's -c FIRST, not BSD's
-    # -f: true BSD/macOS stat has no -c at all and fails cleanly (empty stdout),
-    # which is what the fallback below relies on. Doing it the other way round
-    # breaks on any GNU stat (Linux included, not just Windows) because -c there
-    # means "custom format" but -f means "filesystem info, not file info" — it
-    # does not reject an unrecognized file-format string, it just ignores it and
-    # dumps filesystem stats (blocks/inodes) instead, exiting non-zero but still
-    # printing to stdout. That non-empty garbage defeats the `[[ -n "$line" ]]`
-    # fallback check, and the leading token of a line like "Inodes: Total: ..."
-    # then gets fed to `date` as an "epoch", which is what produced
-    # `date: invalid date '@Inodes:'` here.
-    newest_local_file() {  # dir -> "YYYY-MM-DD HH:MM  relative/path" of the newest file, empty if none
-      local dir="$1" line epoch path
-      line="$(find "$dir" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1)"
-      [[ -n "$line" ]] || line="$(find "$dir" -type f -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1)"
-      [[ -n "$line" ]] || return 0
-      epoch="${line%% *}"; path="${line#* }"
-      printf '%s  %s\n' \
-        "$(date -r "$epoch" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%Y-%m-%d %H:%M')" \
-        "${path#"$dir"/}"
-    }
-
-    want_name() {  # a single top-level folder name
-      local t="${1#/}"; t="${t%/}"
-      [[ -n "$t" ]]      || die "Which folder? Try: 42sync projects"
-      [[ "$t" != */* ]]  || die "Only top-level folders under $LOCAL are managed here.
-Got '$1'. Use just the folder name, e.g. '${t%%/*}'."
-      printf '%s' "$t"
-    }
-
-    case "$SUB" in
-      list)
-        excl="$(excluded_names)"; loc="$(local_names)"; drv="$(drive_names)"
-        echo
-        printf '  %-9s %-24s %-16s %s\n' STATUS FOLDER WHERE ''
-        while IFS= read -r name; do
-          [[ -n "$name" ]] || continue
-          here=0; there=0
-          grep -qxF -- "$name" <<<"$loc" && here=1
-          grep -qxF -- "$name" <<<"$drv" && there=1
-          where="local + Drive"; (( here )) || where="Drive only"; (( there )) || where="local only"
-          if grep -qxF -- "$name" <<<"$excl"; then
-            if (( here == 0 && there == 0 )); then
-              printf '  \033[33m%-9s\033[0m %-24s %-16s %s\n' stale "$name" "-" "rule matches nothing; drop it"
-            elif (( here && there )); then
-              printf '  \033[33m%-9s\033[0m %-24s %-16s %s\n' excluded "$name" "$where" "both copies exist -> projects diff $name"
-            else
-              printf '  \033[33m%-9s\033[0m %-24s %-16s\n' excluded "$name" "$where"
-            fi
-          else
-            printf '  \033[32m%-9s\033[0m %-24s %-16s\n' synced "$name" "$where"
-          fi
-        done < <(printf '%s\n%s\n%s\n' "$loc" "$drv" "$excl" | grep -v '^$' | sort -u)
-        cat <<EOF
-
-  42sync projects include <folder>   carry it on this machine (alias: add)
-  42sync projects exclude <folder>   stop carrying it here; Drive copy untouched
-  42sync projects diff    <folder>   compare the two copies before you decide
-  42sync projects delete  <folder>   remove it from Drive, for every machine
-EOF
-        logmsg "RESULT: listed"
-        ;;
-
-      diff)
-        t="$(want_name "$TARGET")"
-        [[ -d "$LOCAL/$t" ]] || die "Not on this machine: $LOCAL/$t
-Nothing to compare — a plain 'include' will just pull it down from Drive."
-        yellow "Comparing  $LOCAL/$t   <->   $REMOTE/$t"
-        echo "Reading both sides in full; this takes a moment and changes nothing."
-        echo
-        cmb="$(mktemp)"
-        # Artifact filters only, so an excluded folder is still comparable.
-        rclone check "$LOCAL/$t" "$REMOTE/$t" \
-          --filter-from "$FILTERS" --links --combined "$cmb" || true
-        same=$(grep -c '^= ' "$cmb" || true)
-        onlyl=$(grep -c '^- ' "$cmb" || true)
-        onlyr=$(grep -c '^+ ' "$cmb" || true)
-        diffr=$(grep -c '^\* ' "$cmb" || true)
-        printf '  %-22s %s\n' "identical"            "$same"
-        printf '  %-22s %s\n' "only on this machine" "$onlyl"
-        printf '  %-22s %s\n' "only on Drive"        "$onlyr"
-        printf '  %-22s %s\n' "differ"               "$diffr"
-        { echo "--- combined report ---"; cat "$cmb"; } >> "$LOG"
-        show() { local m="$1" label="$2" n
-                 n=$(grep -c "^$m " "$cmb" || true); (( n )) || return 0
-                 echo; echo "  $label:"; grep "^$m " "$cmb" | sed "s/^$m /    /" | head -15
-                 (( n > 15 )) && echo "    ... and $((n-15)) more — full list in the log"; return 0; }
-        show '-' "only on this machine"; show '+' "only on Drive"; show '\*' "differ"
-        rm -f "$cmb"
-        echo
-        newest_local="$(newest_local_file "$LOCAL/$t")"
-        newest_drive="$(rclone lsl "$REMOTE/$t" --filter-from "$FILTERS" | sort -k2,3r | head -1 | awk '{print $2" "substr($3,1,5)"  "$4}')"
-        printf '  %-22s %s\n' "newest here"     "${newest_local:-none}"
-        printf '  %-22s %s\n' "newest on Drive" "${newest_drive:-none}"
-        echo
-        if (( onlyl == 0 && diffr == 0 && onlyr == 0 )); then
-          green "Identical. Safe to include — nothing will move."
-        elif (( onlyl == 0 && diffr == 0 )); then
-          green "Drive is ahead; this machine has nothing the other side lacks."
-          echo "Including it will simply pull the newer files down."
-        elif (( onlyr == 0 && diffr == 0 )); then
-          green "This machine is ahead; Drive has nothing this side lacks."
-          echo "Including it will simply push your files up."
-        else
-          yellow "Both sides have changes the other does not."
-          cat <<EOF
-
-Including it makes bisync do a genuine two-way merge: a file changed on only
-one side moves across, but a file changed on BOTH becomes a .conflict pair for
-you to resolve by hand. That is safe — nothing is lost — just untidy.
-
-To pick a winner first instead, one of these, with --dry-run until the list
-looks right:
-
-  take Drive's copy :  rclone sync "$REMOTE/$t" "$LOCAL/$t" --filter-from "$FILTERS" --links --dry-run
-  take this copy    :  rclone sync "$LOCAL/$t" "$REMOTE/$t" --filter-from "$FILTERS" --links --dry-run
-
-'rclone sync' is one-way and deletes on the destination whatever the source
-lacks. Read the dry run carefully before dropping the flag.
-EOF
-        fi
-        echo
-        echo "Then:  42sync projects include $t"
-        logmsg "RESULT: diff same=$same onlyLocal=$onlyl onlyDrive=$onlyr differ=$diffr"
-        ;;
-
-      include|add)
-        t="$(want_name "$TARGET")"
-        rule="$(rule_for "$t")"
-        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
-          tmpf="$(mktemp)"
-          grep -vxF -- "$rule" "$LOCAL_FILTERS" > "$tmpf" && mv "$tmpf" "$LOCAL_FILTERS"
-          logmsg "included: $t"
-          green "Now syncing on this machine: $t"
-          if [[ -d "$LOCAL/$t" ]]; then
-            echo
-            yellow "A copy already exists here. If it has drifted from Drive, bisync will"
-            echo "produce .conflict pairs rather than pick a side. Worth checking first:"
-            echo "  42sync projects diff $t"
-          else
-            echo "The next sync pulls it down from Drive."
-          fi
-        else
-          green "$t was already syncing — nothing to do."
-        fi
-        echo
-        echo "Check before you sync:  42sync check"
-        ;;
-
-      exclude)
-        t="$(want_name "$TARGET")"
-        # Catch the silent-no-op: a name that exists on neither side is almost
-        # always a typo or a path given at the wrong level.
-        if ! grep -qxF -- "$t" <<<"$(local_names)" && ! grep -qxF -- "$t" <<<"$(drive_names)"; then
-          die "No top-level folder '$t' on this machine or on Drive.
-A rule for it would match nothing. Run '42sync projects' to see the real names."
-        fi
-        rule="$(rule_for "$t")"
-        if grep -qxF -- "$rule" "$LOCAL_FILTERS" 2>/dev/null; then
-          green "Already excluded on this machine: $t"
-        else
-          printf '%s\n' "$rule" >> "$LOCAL_FILTERS"
-          logmsg "excluded: $t"
-          green "No longer syncing on this machine: $t"
-        fi
-        echo
-        echo "The Drive copy is untouched — not transferred, not deleted — so any other"
-        echo "machine keeps syncing it normally."
-        if [[ -d "$LOCAL/$t" ]]; then
-          echo
-          yellow "$LOCAL/$t still exists here and will simply stop syncing."
-          echo "To reclaim the space:  rm -rf \"$LOCAL/$t\""
-          echo "That deletion will NOT reach Drive — the path is filtered out now."
-        fi
-        echo
-        echo "Check before you sync:  42sync check"
-        ;;
-
-      delete)
-        t="$(want_name "$TARGET")"
-
-        # The dangerous case, and the reason this is a wrapper rather than a note
-        # in the README: if the folder is still SYNCED and still here, removing it
-        # from Drive makes the next bisync read that as "deleted on Path2" and
-        # delete your local copy too. Excluding it first is what protects it.
-        if [[ -d "$LOCAL/$t" ]] && ! grep -qxF -- "$(rule_for "$t")" "$LOCAL_FILTERS" 2>/dev/null; then
-          die "'$t' is still syncing on this machine, and a copy is here:
-  $LOCAL/$t
-
-Deleting it from Drive now would make the next '42sync' see it as deleted and
-remove your local copy as well. Stop syncing it here first:
-
-  42sync projects exclude $t
-  42sync projects delete  $t
-
-After that the local copy is safe: the path is filtered out, so nothing
-propagates in either direction."
-        fi
-
-        yellow "About to delete from Drive:  $REMOTE/$t"
-        echo
-        # No filters anywhere in this branch. Filters are what HIDE these files;
-        # purge addresses the path directly, which is why this works at all.
-        rclone size "$REMOTE/$t" | sed 's/^/  /'
-        echo
-        cat <<EOF
-This removes the folder for EVERY machine, not just this one. Any other machine
-syncing it sees the removal on its next run and deletes its own copy.
-
-Drive keeps deleted files in its trash for about 30 days.
-EOF
-        if [[ -d "$LOCAL/$t" ]]; then
-          echo
-          green "Your local copy at $LOCAL/$t is NOT touched by this,"
-          echo "and stays safe as long as '$t' remains excluded here."
-        fi
-        echo
-        read -r -p "Press Enter to see the dry run (Ctrl-C to abort) " _ || true
-        rclone purge "$REMOTE/$t" --dry-run --verbose 2>&1 | tee -a "$LOG"
-        echo
-        yellow "Nothing has been deleted yet."
-        read -r -p "Type the folder name '$t' to delete it from Drive: " reply || true
-        if [[ "$reply" != "$t" ]]; then
-          logmsg "RESULT: aborted at the confirmation prompt — nothing was deleted"
-          die "Aborted — nothing was changed."
-        fi
-        logmsg "confirmed by user — purging $REMOTE/$t"
-
-        rclone purge "$REMOTE/$t" --verbose 2>&1 | tee -a "$LOG"
-        rc=${PIPESTATUS[0]}
-        if (( rc != 0 )); then
-          logmsg "RESULT: purge failed (rc=$rc)"
-          red "Purge did not complete."
-          cat <<'EOF'
-
-If the log shows 'appNotAuthorizedToChild', that folder holds something rclone
-did not create — most likely a file added through drive.google.com. Under the
-drive.file scope no rclone command can remove it. Whatever is left has to go
-through the Drive web interface.
-EOF
-          exit "$rc"
-        fi
-        logmsg "RESULT: purged $REMOTE/$t"
-        green "Deleted from Drive: $t"
-        if [[ -d "$LOCAL/$t" ]]; then
-          echo
-          echo "The exclusion rule is deliberately left in place. It is now the only"
-          echo "thing stopping the next sync from uploading your local copy straight"
-          echo "back to Drive. Remove the local folder too if you are done with it:"
-          echo "  rm -rf \"$LOCAL/$t\""
-        fi
-        ;;
-
-      *) die "Usage: 42sync projects [list|include <folder>|exclude <folder>|diff <folder>|delete <folder>]" ;;
-    esac
-    ;;
-
   status)
     echo "Local:  $LOCAL"
     du -sh "$LOCAL" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
@@ -756,11 +587,11 @@ EOF
     if ls "$WORKDIR"/*.lst >/dev/null 2>&1; then
       green "  present ($(ls -1 "$WORKDIR"/*.lst 2>/dev/null | wc -l) listing files)"
     else
-      yellow "  MISSING — next run needs --resync"
+      yellow "  MISSING — next run needs resync-apply"
     fi
     echo
     echo "Recent runs:"
-    recent="$(ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' | head -5)"
+    recent="$(ls -1t "$LOGDIR"/42sync-*.log 2>/dev/null | grep -v -- '-last\.log$' | head -5)"
     if [[ -n "$recent" ]]; then
       printf '%s\n' "$recent" | sed 's|^|  |'
     else
@@ -768,15 +599,48 @@ EOF
     fi
     ;;
 
-  logs)
-    ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v '/last\.log$' || echo "(no logs yet)"
+  dirty-check|dirty-apply)
+    require_local
+    check_repos
+    red "WARNING: this can corrupt a repo's .git if it has genuinely diverged from Drive."
+    echo "A real repo's .git/index was corrupted this way the day this mode was built."
+    echo "See TROUBLESHOOTING.md: \"A repo's .git got corrupted by a bisync conflict.\""
+    echo
+
+    if [[ "$MODE" == dirty-check ]]; then
+      yellow "Would sync ALL repos including ${#DIRTY_REPOS[@]} with uncommitted changes:"
+      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      run_bisync "${COMMON[@]}" --dry-run
+      green "Dry run only — nothing was changed. Run 'dirty-apply' once it looks right."
+    else
+      warn_no_multiplexer
+      if [[ -n "${2:-}" ]]; then
+        [[ "$2" == "DIRTY" ]] || die "Expected DIRTY as the confirmation argument, got '$2'."
+      else
+        yellow "Syncing ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes anyway:"
+        printf '  %s\n' "${DIRTY_REPOS[@]}"
+        read -r -p "Type DIRTY to proceed: " reply || true
+        [[ "$reply" == "DIRTY" ]] || die "Aborted — nothing was changed."
+      fi
+      run_bisync "${COMMON[@]}"
+      green "Synced (dirty repos included)."
+    fi
     ;;
 
-  sync)
+  apply)
     require_local
     warn_no_multiplexer
     check_repos
-    run_bisync "${COMMON[@]}"
+    if (( ${#DIRTY_REPOS[@]} == 0 )); then
+      run_bisync "${COMMON[@]}"
+    else
+      yellow "Skipping ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes this run:"
+      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      echo "Commit first, or run '42sync dirty-apply' to sync everything including these."
+      echo
+      compute_skip_args
+      run_bisync "${COMMON[@]}" "${SKIP_ARGS[@]}"
+    fi
     green "Synced."
     ;;
 

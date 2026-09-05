@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#
+# 42logs — list logs written by every 42* script (they all share one log
+# directory). Writes nothing of its own: listing logs would change the very
+# thing it reports, and leave a trail of entries that record nothing but
+# having looked. No verbs -- running it always does its one job.
+
+set -uo pipefail
+
+LOGDIR="$HOME/.local/state/42sync"
+
+ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v -- '-last\.log$' || echo "(no logs yet)"

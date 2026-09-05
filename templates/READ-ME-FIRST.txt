@@ -19,7 +19,7 @@
 
   Files must enter through the LOCAL side:
 
-      put it in ~/Projects/...   then run:   42sync
+      put it in ~/Projects/...   then run:   42sync apply
 
 ---------------------------------------------------------------------
   ALSO

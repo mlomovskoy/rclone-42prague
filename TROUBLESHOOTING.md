@@ -5,6 +5,28 @@ really meant.
 
 ---
 
+## I edited a script in this repo, but running it shows no change
+
+**Means:** you edited `scripts/42sync` (or `42links`/`42password`/
+`42projects`/`42logs`) in a clone of this repo, but the copy on your `PATH`
+resolves to the already-*installed* copy in `~/bin` — a separate file, not a
+symlink back to the repo. Editing the source doesn't touch what actually
+runs until you reinstall it. (This doesn't apply to `42sync_install.sh`
+itself — it stays in the repo and is always run as `./42sync_install.sh`, so
+its own edits take effect immediately.)
+
+**Fix:**
+
+```bash
+./42sync_install.sh apply
+```
+
+Re-run it from the repo after every edit you want to actually test. It's
+idempotent and only touches what changed (`cmp`-checks each script before
+overwriting), so it's always safe to run.
+
+---
+
 ## `cannot find prior Path1 or Path2 listings`
 
 ```
@@ -20,18 +42,19 @@ and also after you rename either side — the cached listings in
 **Fix:**
 
 ```bash
-42sync seed      # ~/Projects is empty, Drive is truth
-42sync resync    # both sides already have real content (a laptop joining a
-                 # Drive folder a campus machine already seeded, say)
+42sync seed            # ~/Projects is empty, Drive is truth
+42sync resync-check    # both sides already have real content (a laptop joining a
+42sync resync-apply    # Drive folder a campus machine already seeded, say)
 ```
 
-`resync` wraps a `rclone bisync --resync` with the same dry-run-then-confirm guard
-as `force` — it shows you the full transfer plan and makes you type `RESYNC` before
-touching anything. Do not hand-type `rclone bisync --resync` yourself: it is easy
-to drop a `--filter-from` your `projects-local.txt` needs, which silently re-syncs
-something you meant to keep off this machine.
+`resync-check`/`resync-apply` wrap a `rclone bisync --resync` with the same
+dry-run-then-confirm guard as `force-check`/`force-apply` — `resync-apply` shows you
+the full transfer plan and makes you type `RESYNC` before touching anything (unless
+given it as an argument). Do not hand-type `rclone bisync --resync` yourself: it is
+easy to drop a `--filter-from` your `projects-local.txt` needs, which silently
+re-syncs something you meant to keep off this machine.
 
-`--workdir` is what `resync` (and every other mode) passes so listings live in
+`--workdir` is what every mode passes so listings live in
 `~/.local/state/42sync/bisync/` rather than `~/.cache`, which these machines clear
 between sessions. See "The baseline disappears between sessions" below.
 
@@ -61,6 +84,40 @@ logs written before a logout still being present after it).
 
 If you run `rclone bisync` by hand, pass the same `--workdir`, otherwise you are
 using a different, empty baseline and will be told to `--resync` again.
+
+---
+
+## `42sync resync-apply`'s log says "Bisync successful" but nothing was actually applied
+
+**Means:** you're looking at the dry-run half, not the real one. This only
+happens when `resync-apply` was run with **no** `RESYNC` argument — that
+falls back to the interactive flow, which calls bisync twice into the *same*
+log: once with `--dry-run` to show you what would happen, and again for real
+only after you type `RESYNC` at the prompt. Both halves print "Bisync
+successful" on completion; that phrase alone does not tell you which one
+you're reading. (Running `42sync resync-check` first, then `42sync
+resync-apply RESYNC`, avoids this entirely — each is its own invocation with
+its own log, so there is nothing to confuse.)
+
+**How to tell which one actually ran:** check whether the bisync workdir's
+listing files were actually rewritten —
+
+```bash
+ls -la ~/.local/state/42sync/bisync/*.lst
+```
+
+(the plain `.path1.lst`/`.path2.lst` files, not the `-dry`/`-dry-new`/`-old`
+variants). A completed real run always rewrites these, even when there was
+"nothing to transfer" — persisting the listings is the whole point of a
+resync. If their timestamp is older than your resync attempt, only the dry
+run happened; the confirmation prompt is either still waiting in a terminal
+somewhere, or the session was closed before you answered it (a plain Ctrl-C
+or closed window at the `Type RESYNC to apply it for real:` prompt exits
+immediately with no further log line, so an aborted attempt leaves no
+"Aborted" message to distinguish it from a genuinely completed one).
+
+**Fix:** find the terminal where you ran it and finish answering the prompt,
+or re-run `42sync resync-apply` from scratch.
 
 ---
 
@@ -99,10 +156,13 @@ and investigate — the guard may be catching a real problem.
 **Fix:**
 
 ```bash
-42sync force
+42sync force-check
+42sync force-apply
 ```
 
-It shows a dry run and requires you to type `FORCE` before doing anything.
+`force-check` shows the dry run; `force-apply` requires you to type `FORCE`
+before doing anything (or pass it as an argument to skip the prompt once
+you've reviewed the dry run's log).
 
 ### Do NOT run `--resync` to fix this
 
@@ -110,6 +170,37 @@ Tempting, because earlier errors kept suggesting it. It would make things worse:
 resync first copies Path2-only files *down* to Path1, recreating the old directory
 names locally alongside your renamed ones. You end up with both structures on both
 sides.
+
+### Or: you just excluded (or removed) a project this sync already knew about
+
+**A second, unrelated cause of the identical error message — with the
+opposite fix.** If you ran `42projects exclude <ID>` (or deleted a folder
+from Drive/local directly) right after a sync that still had it included,
+bisync's baseline remembers those files from that last run. The very next
+sync sees them vanish from the now-filtered view and reads that exactly like
+a rename — "these files got deleted" — even though nothing was actually
+removed, they simply stopped being tracked.
+
+**How to tell which cause you're looking at:** run `42projects list` — if
+the folder(s) behind the bulk of the deletes show as `excluded`, it's this
+case, not a rename.
+
+**Fix — the opposite of the rename case above:**
+
+```bash
+42sync resync-check
+42sync resync-apply
+```
+
+**Not `force-apply`.** `force-apply` pushes through *real* deletions
+(correct for a rename you actually want propagated to Drive). `resync-apply`
+recomputes the baseline against the current filters and, per its own
+documented guarantee, never deletes anything — exactly what's needed here,
+since the excluded folder's Drive content should stay frozen and untouched,
+not get purged. This is precisely how a `force-apply` run once already
+touched `rclone-42prague`'s diverged `.git` for real after its exclusion
+rule had gone missing — see "A repo's `.git` got corrupted by a bisync
+conflict" below for that recovery.
 
 ---
 
@@ -155,11 +246,12 @@ invisible to every future run.
 `appNotAuthorizedToChild` is the `drive.file` scope: rclone cannot remove a folder that
 holds anything it did not create. Retrying does not help.
 
-**Fix:** `42sync orphans check` to see what is there, `42sync orphans` to remove it.
+**Fix:** `42sync orphans-check` to see what is there, `42sync orphans-apply` to remove it.
 
 It reads the exclude patterns out of your filter file and passes them as `--include`,
 which is the only way to reach these files; lists what it found; shows a delete dry
-run; and makes you type `DELETE` before touching anything.
+run; and makes you type `DELETE` before touching anything (or pass it as an argument
+to `orphans-apply` to skip the prompt).
 
 By hand, if you prefer:
 
@@ -232,7 +324,7 @@ anything failed. It is not the security boundary there anyway: `%APPDATA%` is
 already restricted by Windows to your own account by default, which is the actual
 protection `chmod 600` exists to add on a shared Linux machine.
 
-`42install`'s post-install check asks rclone itself for this path (`rclone config
+`42sync_install.sh`'s post-install check asks rclone itself for this path (`rclone config
 file`) rather than hardcoding the Linux one, so it reports correctly on every
 platform — but nothing else in this README does, so re-read `~/.config/rclone/...`
 as "wherever `rclone config file` says" whenever you're on Windows.
@@ -327,9 +419,177 @@ under Developer Mode), but it is an `HKLM` (machine-wide) setting: it grants
 not just symlink creation. Fine on a single-user machine; the scoped
 `secpol.msc` fix above is the better default when other accounts share it.
 
-**Then:** re-run `42sync resync` (or whichever mode aborted) — the aborted run
+**Then:** re-run `42sync resync-apply` (or whichever mode aborted) — the aborted run
 leaves no valid baseline, but anything that already transferred does not need to
 transfer again.
+
+---
+
+## `mv`/`rm -rf` on a directory fails with "Device or resource busy" (Windows)
+
+**Means:** Windows locks a directory that is the *current working directory*
+of any running process, or that has open file handles held by another program
+(an editor watching the folder, an indexer, antivirus scanning it) — unlike
+Linux, where renaming or removing a directory works fine even while something
+has files open inside it. Renaming/removing the directory *itself* fails with
+this error until whatever holds the lock releases it; individual files inside
+it are usually still removable.
+
+**Fix:** `cd` out of the directory first if your own shell is sitting inside
+it — that alone is often the whole problem. If something else (an editor,
+an indexer) holds the lock, either close it, or avoid renaming/removing the
+top-level directory and work file-by-file inside it instead.
+
+---
+
+## A 42 exercise's filename can never be checked out (Windows)
+
+**Means:** NTFS forbids several characters in filenames (`"`, `*`, `?`, `<`,
+`>`, `|`, `:`) that POSIX filesystems allow. Some Piscine exercises
+deliberately use one of these in a test fixture's filename. The file exists
+fine in git's history and checks out normally on Linux, but can never be
+materialized as an actual file on a native Windows checkout — Windows' file
+APIs reject the name unconditionally, and no git configuration changes that.
+`git status` reports it as permanently "deleted"; `git reset`/`git read-tree`
+fail outright trying to write an index entry for it:
+
+```
+error: invalid path 'ex05/...'
+fatal: make_cache_entry failed for path 'ex05/...'
+```
+
+**Not a bug, and there is no native-Windows fix.** The file is still viewable
+without a checkout:
+
+```bash
+git show HEAD:'path/to/the/odd/file'
+```
+
+For an actual working checkout of it, see the README's "Windows: native Git
+Bash, or WSL?" — only a real POSIX filesystem (WSL, or the original campus
+Linux machine) can hold this filename at all.
+
+**If this file's index entry gets corrupted** (e.g. by a bisync conflict —
+see the symlink-privilege entry above for how that happens), rebuilding the
+index the normal way (`git reset` / `git read-tree HEAD`) will fail on this
+exact path, the same error as above. Restore the index from a known-good
+copy instead of trying to reconstruct it locally — a Drive-synced
+`index.conflict1`/`.conflict2` backup from before the corruption, or a fresh
+copy pulled from wherever the repo is also cloned:
+
+```bash
+rclone copyto "gdrive:_projects_rclone/<repo-path>/.git/index.conflict1" .git/index
+```
+
+`index.conflict1` is generally the machine's own last-known-good index (per
+the `Renaming Path1 copy` vs `Path2 copy` wording bisync logs when it creates
+these) — `.conflict2` is the other side's. Check `git status` afterward:
+alongside the always-permanent "deleted" line for the tricky-filename entry,
+it should show only real, believable modifications — not every tracked file
+as deleted-and-untracked.
+
+---
+
+## `~/.config/rclone/projects-local.txt` loses its exclude rules — cause not yet known
+
+**Status: unresolved.** Documented so the symptom is recognized before it
+causes damage again, not because there's a fix yet.
+
+**What happened:** `projects-local.txt` had working `- /rclone-42prague/**`
+and `- /mac-device-management/**` rules, both confirmed present earlier in
+the same session. Later the same day, the file was found reduced to just its
+header comment — both rules gone, with no `42projects include` ever
+run and no manual edit made to it. The very next `42sync force-apply` then
+synced `rclone-42prague`'s `.git` for real, producing the whole-tree
+conflict corruption documented above — this file's rules disappearing is
+what removed the guard that would have prevented that.
+
+**What's been ruled out:** nothing in `42sync`/`42projects` writes to this
+file except `42projects include`/`exclude` (neither was run in between). It
+lives under `~/.config`, entirely outside `$LOCAL`, so bisync itself cannot
+touch it — this isn't a sync side-effect. No other process on this machine
+is known to touch it.
+
+**If you notice your exclusions are gone:** before running `force-apply` or
+`apply`, run `42projects list` and re-add anything that should be excluded
+(`42projects exclude <ID>`) — re-establishing the rules is quick and
+safe. Treat an unexpectedly-empty `projects-local.txt` as a signal to check
+carefully before your next sync, not as something to shrug off — it's exactly
+the precondition for the corruption case above.
+
+---
+
+## A repo's `.git` got corrupted by a bisync conflict (whole tree, not just the index)
+
+**Symptom:** `git status` reports "No commits yet" or similarly broken
+output. Every tracked file has a `.conflict1`/`.conflict2` pair, including
+`.git/config`, `.git/index`, and `.git/refs/heads/<branch>` themselves —
+not just one file, the whole tree. `git fsck` may report nothing useful
+because there's no valid `.git/config` for git to even operate against.
+
+**Means:** the repo's `.git/` was being synced whole (the current default —
+see "Renaming directories is expensive" and the vogsphere-write-revocation
+entries elsewhere in this file for why that's the design), and its local and
+Drive copies had genuinely diverged — normal after enough independent work on
+each side without an intervening sync. bisync compared every file, found
+them all different, and conflict-renamed all of them rather than picking a
+side.
+
+**This looks catastrophic but usually isn't, if the repo has a remote you
+can still reach.** The actual commit history lives in `.git/objects`, which
+bisync's conflict handling does not touch — only the *pointers* to it
+(`config`, `index`, `refs`, `HEAD`) get conflict-renamed. If `origin` (or any
+other configured remote) still has the real history, recovery is a fresh
+clone, not manual repair:
+
+1. **Before touching anything, check for uncommitted work worth saving.**
+   Every tracked file is duplicated as `.conflict1`/`.conflict2` right now —
+   if you had *uncommitted* local changes, they're preserved in whichever
+   conflict variant is newer (check `ls -la` timestamps). Copy anything you
+   need somewhere outside the repo first.
+2. **Clone a known-good copy into a separate temp folder** — don't clone
+   directly on top of the broken one:
+   ```bash
+   git clone <remote-url> ../repo-name-fresh
+   ```
+3. **Replace the broken `.git` with the fresh one:**
+   ```bash
+   rm -rf .git
+   cp -r ../repo-name-fresh/.git .git
+   ```
+4. **Delete every conflict file** (safe now — step 1 already saved anything
+   that mattered):
+   ```bash
+   find . \( -iname "*.conflict1" -o -iname "*.conflict2" \) -delete
+   ```
+   Note the parentheses: `find . -iname "*.conflict1" -o -iname "*.conflict2"
+   -delete` (no grouping) silently only deletes matches for the *second*
+   pattern — `-delete` binds to the nearest condition, not the whole
+   expression, and `find` gives no warning that it did this.
+5. **Restore the real files from the now-healthy git:**
+   ```bash
+   git checkout -- .
+   ```
+6. **Verify:** `git status` should show clean (or only genuinely
+   uncommitted work), `git fsck --full` should report nothing, `git log`
+   should show real history.
+7. **Clean up the stray conflict files left on Drive too** — bisync creates
+   them on both sides. `42sync orphans-apply` won't catch these (they're not
+   artifact-filter excludes), so remove them directly:
+   ```bash
+   rclone delete "gdrive:_projects_rclone/<repo-path>" --include "*.conflict*"
+   ```
+8. **The bisync baseline is now stale relative to reality** (it still
+   remembers the pre-recovery state) — expect `42sync check`/`apply` to trip
+   the delete guard next, and fix it with `42sync resync-check`/`resync-apply`,
+   not `force-apply` — see "Safety abort: too many deletes" above for why
+   that distinction matters.
+
+**If there is no reachable remote** (a vogsphere repo with write access
+already revoked, and no secondary GitHub remote — see "Known limitations" in
+the README): the `.conflict1`/`.conflict2` pairs are the only recovery path.
+Compare their contents by hand and reconstruct manually; there is no
+shortcut here for a repo that doesn't have a GitHub remote yet.
 
 ---
 
@@ -348,7 +608,7 @@ which proves the token works.
 **Not a bug, and there is no fix.** `drive.file` grants access only to files the app
 itself created. Web-uploaded files are invisible to rclone permanently.
 
-Put files in `~/Projects/` and run `42sync`.
+Put files in `~/Projects/` and run `42sync apply`.
 
 ---
 
@@ -417,9 +677,9 @@ never written, or were written from a tree that no longer matches.
 **Fix:** make the two sides genuinely agree first, then rebuild the record.
 
 ```bash
-42sync verify           # note exactly what is missing
-42sync                  # a normal sync usually resolves it
-42sync verify           # confirm
+42sync verify   # note exactly what is missing
+42sync apply    # a normal sync usually resolves it
+42sync verify   # confirm
 ```
 
 If `verify` still fails after a successful sync, push local up one-way and re-baseline —
@@ -445,7 +705,7 @@ the only state in which `--resync` cannot resurrect anything you deleted.
 
 ## `SHA256SUMS is not validly signed`
 
-**Means:** `42install` fetched rclone's checksum file, but it was not signed by the key
+**Means:** `42sync_install.sh` fetched rclone's checksum file, but it was not signed by the key
 this repo pins. Either the download was corrupted or truncated, or something between
 you and `downloads.rclone.org` altered it. Nothing was installed.
 
@@ -453,7 +713,7 @@ you and `downloads.rclone.org` altered it. Nothing was installed.
 flaky network is the likeliest cause by a wide margin:
 
 ```bash
-./scripts/42install force
+./42sync_install.sh reinstall
 ```
 
 If it fails again, verify by hand before going further:
@@ -465,7 +725,7 @@ gpg --keyserver hkps://keys.openpgp.org \
 gpg --verify SHA256SUMS
 ```
 
-A "Good signature" there but a failure in `42install` points at the bundled
+A "Good signature" there but a failure in `42sync_install.sh` points at the bundled
 `scripts/rclone-release-key.asc`. A bad signature there too means the problem is
 upstream or on your network, and installing rclone from that source is not safe.
 
@@ -477,7 +737,7 @@ corrupted, or the pin was edited. Restore it from git.
 
 ## `Cannot verify rclone's signature: gpg is not installed`
 
-**Means:** `42install` verifies rclone's signature by default and will not install
+**Means:** `42sync_install.sh` verifies rclone's signature by default and will not install
 without it. Nothing was installed.
 
 **Fix:** use a machine that has `gpg` — most Linux and macOS installs do, and the campus
@@ -492,7 +752,7 @@ machine), you can proceed with the SHA256 check alone. It catches a corrupted do
 but not a tampered mirror, so decide deliberately:
 
 ```bash
-INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
+INSTALL_ALLOW_UNSIGNED=1 ./42sync_install.sh apply
 ```
 
 ---
@@ -502,11 +762,11 @@ INSTALL_ALLOW_UNSIGNED=1 ./scripts/42install
 **First check whether you excluded it on purpose:**
 
 ```bash
-42sync projects
+42projects list
 ```
 
 Anything listed as `excluded` is being skipped by this machine by design, and its Drive
-copy is untouched. `42sync projects include <path>` brings it back on the next sync.
+copy is untouched. `42projects include <ID>` brings it back on the next sync.
 
 If it is listed as `synced` but still does not arrive, the cause is the `drive.file`
 scope, not the filters — see *Files added through drive.google.com never arrive*. A file
@@ -526,7 +786,7 @@ So `RCLONE_VERSION=1.75.0` becomes `--version=1.75.0`, and because `--version` i
 boolean flag, every single invocation dies during argument parsing.
 
 This is easy to trip over accidentally, because the namespace looks like an ordinary
-prefix rather than a reserved one. `42install` takes its version pin from
+prefix rather than a reserved one. `42sync_install.sh` takes its version pin from
 `INSTALL_RCLONE_VERSION` for exactly this reason.
 
 **Confirm:**

@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 #
-# 42install — put rclone, 42sync, 42links and 42password in ~/bin. No root
-# required. Runs on Linux, macOS, and Windows via Git for Windows' bash.
-#
-#   42install         install or update whatever needs it
-#   42install check   show what would happen, change nothing
-#   42install force   reinstall rclone even when the wanted version is already there
+# 42sync_install.sh — put rclone and every 42* script in ~/bin. No root
+# required. Runs on Linux, macOS, and Windows via Git for Windows' bash. Lives
+# at the repo root (unlike the scripts it installs, which stay in scripts/
+# and get copied into ~/bin) precisely so it's the first thing visible from a
+# fresh clone. Run with no arguments to see every verb this script accepts.
 #
 # Campus machines give you no admin rights, so rclone is installed as a plain
 # binary in ~/bin rather than through a package manager. Everything here is
 # idempotent: re-running is safe, and is the intended way to update.
 #
 # Pin a version instead of taking whatever is current:
-#   INSTALL_RCLONE_VERSION=1.75.0 42install
+#   INSTALL_RCLONE_VERSION=1.75.0 ./42sync_install.sh apply
 #
 # Deliberately not named RCLONE_VERSION: rclone reads every RCLONE_<FLAG>
 # variable in the environment as --<flag>, so RCLONE_VERSION=1.75.0 becomes
@@ -20,10 +19,10 @@
 # `rclone version` fail.
 #
 # The rclone download is checked against a SHA256 that is itself PGP-verified
-# against rclone's release signing key (bundled alongside this script). This is
-# required: if the signature cannot be checked, nothing is installed. To install
-# on a machine without gpg, opt out explicitly with INSTALL_ALLOW_UNSIGNED=1 —
-# that falls back to the SHA256 alone.
+# against rclone's release signing key (scripts/rclone-release-key.asc). This
+# is required: if the signature cannot be checked, nothing is installed. To
+# install on a machine without gpg, opt out explicitly with
+# INSTALL_ALLOW_UNSIGNED=1 — that falls back to the SHA256 alone.
 #
 # This installs tools. It does NOT configure the remote or move any data —
 # `rclone config` and `42sync seed` stay manual because both need decisions
@@ -33,7 +32,7 @@ set -euo pipefail
 
 BINDIR="$HOME/bin"
 BASE_URL="https://downloads.rclone.org"
-SCRIPTS=(42sync 42links 42password)
+SCRIPTS=(42sync 42links 42password 42projects 42logs 42-completions.bash)
 
 # rclone's release signing key. Cross-checked 2026-08-26 against rclone.org's
 # release_signing page, the same page's source in the rclone git repo, and
@@ -42,15 +41,18 @@ SCRIPTS=(42sync 42links 42password)
 RCLONE_KEY_FPR="FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA"
 
 # This file's own directory, so the installer works from a clone in any path.
+# The installer itself lives at the repo root; 42sync/42links/42password and
+# the signing key still live in scripts/ alongside each other.
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-RCLONE_KEY_FILE="$SRC/rclone-release-key.asc"
+SCRIPTS_DIR="$SRC/scripts"
+RCLONE_KEY_FILE="$SCRIPTS_DIR/rclone-release-key.asc"
 
-# Same directory 42sync logs to, so there is one place to look. Named
-# install-* so it cannot collide with 42sync's <mode>-<timestamp>.log, and so
-# each script prunes only its own logs.
+# Same directory every 42* script logs to, so there is one place to look.
+# Prefixed with this script's own name (".sh" stripped) so logs stay
+# identifiable even though "apply"/"check" are shared verb names with other
+# scripts in the same $LOGDIR.
 LOGDIR="$HOME/.local/state/42sync"
 KEEP_LOGS=20
-LOG="$LOGDIR/install-$(date +%Y-%m-%d-%H%M%S).log"
 mkdir -p "$LOGDIR"
 
 # Colour only on a terminal; the log gets plain text either way.
@@ -60,8 +62,12 @@ else
   C_RED=""; C_GRN=""; C_YEL=""; C_OFF=""
 fi
 
-# Logging must never be the thing that breaks an install.
-logmsg() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+# Logging must never be the thing that breaks an install. Guarded on $LOG
+# being set: an unknown-verb die() fires before $LOG exists (it's named
+# after the verb, so it can't be assigned until the verb is validated), and
+# under `set -u` an unguarded reference there would replace the intended
+# "Unknown verb" message with an unbound-variable error instead.
+logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
 say()    { printf '%s\n' "$*";                       logmsg "$*"; }
 red()    { printf '%s%s%s\n' "$C_RED" "$*" "$C_OFF"; logmsg "$*"; }
@@ -70,22 +76,48 @@ yellow() { printf '%s%s%s\n' "$C_YEL" "$*" "$C_OFF"; logmsg "$*"; }
 die()    { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
 
 prune_logs() {
-  local n
-  n=$(ls -1t "$LOGDIR"/install-*.log 2>/dev/null | wc -l)
-  if (( n > KEEP_LOGS )); then
-    ls -1t "$LOGDIR"/install-*.log | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
-  fi
+  local keep
+  keep=$(ls -1t "$LOGDIR"/42sync_install-{apply,check,reinstall}-*.log 2>/dev/null) || true
+  [[ -n "$keep" ]] || return 0
+  printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
 
-MODE="${1:-install}"
+VERBS=(apply check reinstall)
+
+print_verbs() {
+  cat <<'EOF'
+42sync_install.sh <verb>
+
+  apply       install or update whatever needs it
+  check       dry run: show what would happen, change nothing
+  reinstall   reinstall rclone even when the wanted version is already there
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  print_verbs
+  exit 0
+fi
+
+MODE="$1"
+
+if [[ "$MODE" == __complete ]]; then
+  printf '%s\n' "${VERBS[@]}"
+  exit 0
+fi
+
 DRY=0
 FORCE=0
 case "$MODE" in
-  install) ;;
-  check)   DRY=1 ;;
-  force)   FORCE=1 ;;
-  *)       die "Usage: 42install [install|check|force]" ;;
+  apply)     ;;
+  check)     DRY=1 ;;
+  reinstall) FORCE=1 ;;
+  *)         die "Unknown verb '$MODE'. Run './42sync_install.sh' with no arguments to see the list." ;;
 esac
+
+LOG="$LOGDIR/42sync_install-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+: > "$LOG"
+ln -sfn "$LOG" "$LOGDIR/42sync_install-$MODE-last.log"
 
 TODO=()          # things left for the user, printed at the end
 note_todo() { TODO+=("$1"); }
@@ -255,7 +287,7 @@ Refusing to install a binary that has not been verified.
 To install anyway, accepting that only the SHA256 is checked — which catches a
 corrupted download but not a tampered mirror:
 
-  INSTALL_ALLOW_UNSIGNED=1 42install"
+  INSTALL_ALLOW_UNSIGNED=1 ./42sync_install.sh"
     fi
     yellow "  warn: signature NOT checked ($why), INSTALL_ALLOW_UNSIGNED=1 is set"
     say   "        The SHA256 still catches a corrupted download, but it comes from"
@@ -396,9 +428,9 @@ Nothing was installed. Delete any partial download and try again."
 install_scripts() {
   local name
   for name in "${SCRIPTS[@]}"; do
-    [[ -f "$SRC/$name" ]] || die "Missing $SRC/$name — run this from a clone of the repo."
+    [[ -f "$SCRIPTS_DIR/$name" ]] || die "Missing $SCRIPTS_DIR/$name — run this from a clone of the repo."
 
-    if [[ -f "$BINDIR/$name" ]] && cmp -s "$SRC/$name" "$BINDIR/$name"; then
+    if [[ -f "$BINDIR/$name" ]] && cmp -s "$SCRIPTS_DIR/$name" "$BINDIR/$name"; then
       green "ok         $name already current in ${BINDIR/#$HOME/\~}"
       continue
     fi
@@ -411,7 +443,7 @@ install_scripts() {
       continue
     fi
     mkdir -p "$BINDIR"
-    install_file "$SRC/$name" "$BINDIR/$name"
+    install_file "$SCRIPTS_DIR/$name" "$BINDIR/$name"
     green "installed  $name -> ${BINDIR/#$HOME/\~}/$name"
   done
 }
@@ -432,6 +464,14 @@ setup_shell() {
   [[ -f "$rc" ]] || { (( DRY )) || : > "$rc"; }
 
   ensure_line "$rc" 'export PATH="$HOME/bin:$PATH"' 'PATH entry for ~/bin'
+
+  # Tab-completion for every 42* script's verbs. bash only -- zsh has its own,
+  # incompatible completion system (compdef/_arguments, not
+  # complete/compgen/COMPREPLY), so this line would be silently inert there
+  # even if added; skip it rather than write a line that does nothing.
+  if [[ "$shellname" == bash ]]; then
+    ensure_line "$rc" 'source "$HOME/bin/42-completions.bash"' 'tab-completion for 42* scripts'
+  fi
 
   # zsh does not treat '#' as a comment interactively, so pasted commands with
   # trailing comments arrive as arguments. This has caused real confusion here.
@@ -490,7 +530,7 @@ post_checks() {
 
 # --------------------------------------------------------------------- main ---
 
-logmsg "=== 42install $(date '+%F %T') mode=$MODE host=$(uname -n) ==="
+logmsg "=== 42sync_install.sh $(date '+%F %T') mode=$MODE host=$(uname -n) ==="
 logmsg "target=$OS-$ARCH bindir=$BINDIR src=$SRC"
 
 if (( DRY )); then
