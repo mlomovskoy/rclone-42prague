@@ -486,13 +486,22 @@ EOF
     # what you are choosing NOT to take. stderr is left alone so rclone's config
     # password prompt reaches the terminal instead of vanishing.
     drive_names()    { rclone lsd "$REMOTE" --filter-from "$FILTERS" | awk '{print $NF}' | sort; }
-    # BSD stat (macOS) and GNU stat (Linux) take different flags for this, so
-    # try BSD's first and fall back to GNU's — same reason -printf needed a
-    # workaround above.
+    # BSD stat (macOS) and GNU stat (Linux, and Windows via Git Bash's MSYS
+    # coreutils) take different flags for this. Try GNU's -c FIRST, not BSD's
+    # -f: true BSD/macOS stat has no -c at all and fails cleanly (empty stdout),
+    # which is what the fallback below relies on. Doing it the other way round
+    # breaks on any GNU stat (Linux included, not just Windows) because -c there
+    # means "custom format" but -f means "filesystem info, not file info" — it
+    # does not reject an unrecognized file-format string, it just ignores it and
+    # dumps filesystem stats (blocks/inodes) instead, exiting non-zero but still
+    # printing to stdout. That non-empty garbage defeats the `[[ -n "$line" ]]`
+    # fallback check, and the leading token of a line like "Inodes: Total: ..."
+    # then gets fed to `date` as an "epoch", which is what produced
+    # `date: invalid date '@Inodes:'` here.
     newest_local_file() {  # dir -> "YYYY-MM-DD HH:MM  relative/path" of the newest file, empty if none
       local dir="$1" line epoch path
-      line="$(find "$dir" -type f -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1)"
-      [[ -n "$line" ]] || line="$(find "$dir" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1)"
+      line="$(find "$dir" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1)"
+      [[ -n "$line" ]] || line="$(find "$dir" -type f -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1)"
       [[ -n "$line" ]] || return 0
       epoch="${line%% *}"; path="${line#* }"
       printf '%s  %s\n' \

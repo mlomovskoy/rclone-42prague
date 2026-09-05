@@ -211,6 +211,34 @@ discards every commit, which for these repos is the half worth keeping.
 
 ---
 
+## `~/.config/rclone/rclone.conf` doesn't exist (Windows)
+
+**Means:** not broken — wrong path for this platform. Every `chmod 600
+~/.config/rclone/rclone.conf` instruction in this README is written for
+Linux/macOS. Native Windows builds of rclone default to `%APPDATA%\rclone\` (i.e.
+`C:\Users\<you>\AppData\Roaming\rclone\rclone.conf`) instead — an XDG-style path
+never applied there.
+
+**Find the real path on any platform:**
+
+```bash
+rclone config file
+```
+
+**Fix the permissions on Windows:** `chmod 600` on that file will often report
+success but leave the mode unchanged (`644`) — NTFS doesn't map cleanly onto POSIX
+permission bits, so this is largely cosmetic on Windows rather than a sign
+anything failed. It is not the security boundary there anyway: `%APPDATA%` is
+already restricted by Windows to your own account by default, which is the actual
+protection `chmod 600` exists to add on a shared Linux machine.
+
+`42install`'s post-install check asks rclone itself for this path (`rclone config
+file`) rather than hardcoding the Linux one, so it reports correctly on every
+platform — but nothing else in this README does, so re-read `~/.config/rclone/...`
+as "wherever `rclone config file` says" whenever you're on Windows.
+
+---
+
 ## `Couldn't decrypt configuration, most likely wrong password`
 
 **Means:** exactly that. rclone prompts again.

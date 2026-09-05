@@ -83,6 +83,22 @@ of service URL on a real domain before an OAuth app can be published out of "Tes
 | Logs | `~/.local/state/42sync/*.log`, newest as `last.log` |
 | Filters | `~/.config/rclone/projects-filters.txt` |
 
+### Windows: `~/Projects` living somewhere else
+
+`$LOCAL` is hardcoded to `$HOME/Projects` (`C:\Users\<you>\Projects`) throughout
+these scripts. If your real projects folder lives elsewhere (a different drive,
+say), point `~/Projects` at it with an NTFS **junction**, not a symlink:
+
+```powershell
+New-Item -ItemType Junction -Path "C:\Users\<you>\Projects" -Target "D:\Projects"
+```
+
+A junction, not `ln -s`: Git Bash's `ln -s` creates an MSYS-only symlink that
+native Windows binaries (rclone included) cannot follow — they'd see a small text
+file instead of your actual folder. A junction is a real NTFS reparse point, so
+both Git Bash and rclone resolve it transparently, in both directions, with no
+special-casing anywhere else in this toolkit.
+
 ### The `drive.file` scope — read this before you wonder why a file is missing
 
 rclone can only see files **it created itself**. This is the single most
