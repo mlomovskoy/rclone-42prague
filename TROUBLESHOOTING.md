@@ -255,6 +255,56 @@ next run.
 
 ---
 
+## `symlinkat ... A required privilege is not held by the client` (Windows)
+
+```
+ERROR : 42Prague/repos/.../test6.rclonelink: Failed to copy: symlinkat test0
+        42Prague\repos\...\test6: A required privilege is not held by the client.
+ERROR : Bisync critical error: symlinkat ...
+ERROR : Bisync aborted. Must run --resync to recover.
+```
+
+**Means:** Windows does not let a standard (non-admin) account create a real
+symlink by default. `--links` downloads a symlink as a `.rclonelink` file and then
+tries to recreate it as an actual symlink on disk — that last step is what fails.
+One bad symlink is enough to abort the *entire* bisync run and invalidate its
+baseline, even though everything else may have transferred cleanly — check the
+summary above the error for `Transferred: N / N, 100%` before assuming anything
+else was lost.
+
+42's Piscine exercises use symlinks as test fixtures fairly often, so this is
+likely to recur on a different file in a different exercise later. Excluding the
+one path in the filter file is not a real fix.
+
+**Fix — grant the privilege to one account (recommended if this machine has more
+than one standard-user account):**
+
+1. `Win+R` → `secpol.msc` → Enter (needs an admin credential once).
+2. **Local Policies → User Rights Assignment** → **Create symbolic links**.
+3. **Add User or Group** → the affected username → OK.
+4. Log off and back on — user-rights changes apply at the next logon, not
+   immediately.
+
+This is the same mechanism Git for Windows' own docs recommend for symlink
+support without admin rights, and it affects only the account added — another
+standard account on the same machine is untouched. `secpol.msc` needs Windows Pro
+or better; it does not exist on Home editions.
+
+**Fix — Developer Mode (simpler, but machine-wide):**
+
+Settings → Privacy & security → For developers → Developer Mode. This also works
+(rclone's Go runtime uses the unprivileged-symlink-creation flag Windows exposes
+under Developer Mode), but it is an `HKLM` (machine-wide) setting: it grants
+**every** account on the machine the ability to sideload unsigned app packages,
+not just symlink creation. Fine on a single-user machine; the scoped
+`secpol.msc` fix above is the better default when other accounts share it.
+
+**Then:** re-run `42sync resync` (or whichever mode aborted) — the aborted run
+leaves no valid baseline, but anything that already transferred does not need to
+transfer again.
+
+---
+
 ## `rclone lsd gdrive:` prints nothing
 
 **Not a bug.** With the `drive.file` scope rclone can only see files it created. An
