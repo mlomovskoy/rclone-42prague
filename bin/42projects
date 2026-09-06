@@ -10,21 +10,6 @@
 
 set -uo pipefail
 
-# LOCAL_PATH, REMOTE_PATH, FILE_FILTERS, PROJECT_FILTERS, LOG_PATH, KEEP_LOGS all come from
-# here -- shared with every other 42* script.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
-
-mkdir -p "$LOG_PATH" "$(dirname "$FILE_FILTERS")"
-
-# Same defaults 42sync creates on first run -- 42projects can run before
-# 42sync ever has, so it needs to be able to create these too. Both copied
-# from the same on-disk defaults 42sync uses (DEFAULTS_DIR, from the
-# shared lib) -- previously this held its own, deliberately condensed copy
-# of the filters text to avoid duplicating 42sync's verbose prose twice;
-# now that there's a single external file both scripts copy, that's moot.
-[[ -f "$FILE_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-filters.txt" "$FILE_FILTERS"
-[[ -f "$PROJECT_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-local.txt" "$PROJECT_FILTERS"
-
 red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -62,6 +47,25 @@ if [[ "$MODE" == __complete ]]; then
   printf '%s\n' "${VERBS[@]}"
   exit 0
 fi
+
+# LOCAL_PATH, REMOTE_PATH, FILE_FILTERS, PROJECT_FILTERS, LOG_PATH, KEEP_LOGS all come from
+# here -- shared with every other 42* script. Sourced only now, after the
+# no-args/__complete checks above: this file has a side effect (creating
+# $CONFIG_PATH/42-common.local.sh if missing), and a purely informational
+# query -- a bare invocation, or bash tab-completion calling __complete --
+# must never trigger it. Confirmed empirically: it used to.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
+
+mkdir -p "$LOG_PATH" "$(dirname "$FILE_FILTERS")"
+
+# Same defaults 42sync creates on first run -- 42projects can run before
+# 42sync ever has, so it needs to be able to create these too. Both copied
+# from the same on-disk defaults 42sync uses (DEFAULTS_DIR, from the
+# shared lib) -- previously this held its own, deliberately condensed copy
+# of the filters text to avoid duplicating 42sync's verbose prose twice;
+# now that there's a single external file both scripts copy, that's moot.
+[[ -f "$FILE_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-filters.txt" "$FILE_FILTERS"
+[[ -f "$PROJECT_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-local.txt" "$PROJECT_FILTERS"
 
 valid=0
 for v in "${VERBS[@]}"; do [[ "$MODE" == "$v" ]] && valid=1 && break; done

@@ -53,22 +53,6 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_BINDIR="$SRC/bin"
 RCLONE_KEY_FILE="$SRC/rclone-release-key.asc"
 
-# BIN_PATH, LOG_PATH, KEEP_LOGS come from here -- shared with every other 42*
-# script. This installer is the one exception that can't use a plain
-# $SCRIPT_DIR-relative sourcing line for it (it lives at the repo root, not
-# alongside the scripts it installs), so it goes through $REPO_BINDIR instead.
-source "$REPO_BINDIR/42-internal/lib/42-common.sh"
-
-# configure_set/configure_reset/configure_show -- the configure-* verbs below
-# just call these. See that file for what they touch and why.
-source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
-
-# Same directory every 42* script logs to, so there is one place to look.
-# Prefixed with this script's own name (".sh" stripped) so logs stay
-# identifiable even though "apply"/"check" are shared verb names with other
-# scripts in the same $LOG_PATH.
-mkdir -p "$LOG_PATH"
-
 # Colour only on a terminal; the log gets plain text either way.
 if [[ -t 1 ]]; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_OFF=$'\033[0m'
@@ -124,6 +108,26 @@ if [[ "$MODE" == __complete ]]; then
   printf '%s\n' "${VERBS[@]}"
   exit 0
 fi
+
+# BIN_PATH, LOG_PATH, KEEP_LOGS come from here -- shared with every other 42*
+# script. This installer is the one exception that can't use a plain
+# $SCRIPT_DIR-relative sourcing line for it (it lives at the repo root, not
+# alongside the scripts it installs), so it goes through $REPO_BINDIR instead.
+# Sourced only now, after the no-args/__complete checks above: this file has
+# a side effect (creating $CONFIG_PATH/42-common.local.sh if missing), and a
+# purely informational query must never trigger it. Confirmed empirically:
+# it used to.
+source "$REPO_BINDIR/42-internal/lib/42-common.sh"
+
+# configure_set/configure_reset/configure_show -- the configure-* verbs below
+# just call these. See that file for what they touch and why.
+source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
+
+# Same directory every 42* script logs to, so there is one place to look.
+# Prefixed with this script's own name (".sh" stripped) so logs stay
+# identifiable even though "apply"/"check" are shared verb names with other
+# scripts in the same $LOG_PATH.
+mkdir -p "$LOG_PATH"
 
 # A different kind of action entirely (editing a config file, not installing
 # anything) -- handled here and exited before any install-specific setup

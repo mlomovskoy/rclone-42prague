@@ -13,18 +13,6 @@
 
 set -euo pipefail
 
-# LOG_PATH, KEEP_LOGS, and LOCAL_PATH (aliased below as SYNC_ROOT, this script's
-# own established name for it) come from here -- shared with every other
-# 42* script.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
-
-SYNC_ROOT="$LOCAL_PATH"
-BASE="$SYNC_ROOT/42Prague"
-# Compared below against destinations resolved with `pwd -P`. Resolve this one too:
-# if any component of $HOME is itself a symlink, an unresolved value here would fail
-# to match and the guard would silently pass.
-SYNC_ROOT_REAL="$(cd "$SYNC_ROOT" 2>/dev/null && pwd -P || echo "$SYNC_ROOT")"
-
 # link name -> target under $BASE
 LINK_NAMES=(docs repos)
 
@@ -90,6 +78,21 @@ fi
 valid=0
 for v in "${VERBS[@]}"; do [[ "$MODE" == "$v" ]] && valid=1 && break; done
 (( valid )) || { printf '\033[31mUnknown verb '"'"'%s'"'"'. Run '"'"'42links'"'"' with no arguments to see the list.\033[0m\n' "$MODE" >&2; exit 1; }
+
+# LOG_PATH, KEEP_LOGS, and LOCAL_PATH (aliased below as SYNC_ROOT, this script's
+# own established name for it) come from here -- shared with every other
+# 42* script. Sourced only now, after the no-args/__complete/unknown-verb
+# checks above: this file has a side effect (creating
+# $CONFIG_PATH/42-common.local.sh if missing), and a purely informational
+# query must never trigger it. Confirmed empirically: it used to.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
+
+SYNC_ROOT="$LOCAL_PATH"
+BASE="$SYNC_ROOT/42Prague"
+# Compared below against destinations resolved with `pwd -P`. Resolve this one too:
+# if any component of $HOME is itself a symlink, an unresolved value here would fail
+# to match and the guard would silently pass.
+SYNC_ROOT_REAL="$(cd "$SYNC_ROOT" 2>/dev/null && pwd -P || echo "$SYNC_ROOT")"
 
 # Same directory and rotation policy as 42sync and 42sync_install.sh, so
 # there is one place to look. Prefixed with the script's own name so logs
