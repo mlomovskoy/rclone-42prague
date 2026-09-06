@@ -533,6 +533,16 @@ EOF
     head -40 "$listing" | sed 's/^/  /'
     if (( n > 40 )); then echo "  ... and $((n - 40)) more — full list in the log"; fi
     { echo "--- orphans found ---"; cat "$listing"; } >> "$LOG"
+
+    # Parent directories of the orphans about to be deleted, so the later
+    # cleanup pass only ever descends into paths this run actually touched —
+    # never a blind sweep of the whole remote (that used to reach into
+    # unrelated, currently-excluded projects elsewhere on Drive).
+    mapfile -t ORPHAN_DIRS < <(
+      awk '{ sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); print }' "$listing" \
+        | while IFS= read -r p; do dirname -- "$p"; done \
+        | grep -v '^\.$' | sort -u
+    )
     rm -f "$listing"
 
     if [[ "$MODE" == orphans-check ]]; then
@@ -564,11 +574,21 @@ EOF
     (( rc == 0 )) || { logmsg "RESULT: delete failed (rc=$rc)"; die "Delete failed."; }
     logmsg "RESULT: deleted $n file(s), $bytes bytes — recoverable from Drive trash"
 
-    echo
-    yellow "Removing directories left empty ..."
-    echo "Errors here are expected and harmless: under the drive.file scope rclone"
-    echo "cannot remove a folder that holds anything it did not create."
-    rclone rmdirs "$REMOTE" --leave-root --verbose 2>&1 | tee -a "$LOG" || true
+    if (( ${#ORPHAN_DIRS[@]} )); then
+      echo
+      yellow "Removing directories left empty ..."
+      echo "Errors here are expected and harmless: under the drive.file scope rclone"
+      echo "cannot remove a folder that holds anything it did not create."
+      # Scoped to exactly the directories the deleted orphans lived in --
+      # never the whole remote. A blanket 'rclone rmdirs "$REMOTE"' here would
+      # walk every other project on Drive too, including ones excluded on
+      # this machine, and attempt rmdir against directories this run has no
+      # business touching (harmless in practice under drive.file's own
+      # permission wall, but the wrong thing to even attempt).
+      for d in "${ORPHAN_DIRS[@]}"; do
+        rclone rmdirs "$REMOTE/$d" --leave-root --verbose 2>&1 | tee -a "$LOG" || true
+      done
+    fi
 
     echo
     green "Done. Deleted files sit in Drive's trash for about 30 days."
