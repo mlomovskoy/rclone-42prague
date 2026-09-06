@@ -58,7 +58,18 @@ fi
 # $CONFIG_PATH/42-common.local.sh if missing), and a purely informational
 # query -- a bare invocation, or bash tab-completion calling __complete --
 # must never trigger it. Confirmed empirically: it used to.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
+LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib"
+source "$LIBDIR/42-common.sh"
+
+# Computes RCLONE_PASSWORD_COMMAND fresh, from the CURRENT $CONFIG_PATH, and
+# exports it here -- rather than every rclone call below (drive_names,
+# diff, delete-check/-apply) trusting whatever value this script happened
+# to inherit from the shell that launched it, which can go stale the
+# moment CONFIG_PATH changes or the secret moves (see TROUBLESHOOTING.md).
+# A no-op if 42password was never set up on this machine. Shared with
+# 42sync and 42password itself.
+source "$LIBDIR/42-password-command.sh"
+export_rclone_password_command
 
 mkdir -p "$LOG_PATH" "$(dirname "$FILE_FILTERS")"
 
