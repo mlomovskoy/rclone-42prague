@@ -129,6 +129,11 @@ source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
 # appending a second one alongside it" fix applies to both.
 source "$REPO_BINDIR/42-internal/lib/42-ensure-line.sh"
 
+# detect_shell_rc() -- setup_shell() below uses this to find which rc file
+# to write into. Shared with 42password, which needs the exact same
+# detection for its own RCLONE_PASSWORD_COMMAND line.
+source "$REPO_BINDIR/42-internal/lib/42-shell-rc.sh"
+
 # Same directory every 42* script logs to, so there is one place to look.
 # Prefixed with this script's own name (".sh" stripped) so logs stay
 # identifiable even though "apply"/"check" are shared verb names with other
@@ -524,15 +529,13 @@ install_scripts() {
 
 setup_shell() {
   local rc shellname
-  # Git for Windows' bash reports $SHELL as .../bash.exe, not bash — strip the
-  # extension so this matches the same way it does on Linux and macOS.
-  shellname="${SHELL##*/}"; shellname="${shellname%.exe}"
-  case "$shellname" in
-    zsh)  rc="$HOME/.zshrc" ;;
-    bash) rc="$HOME/.bashrc" ;;
-    *)    yellow "skip       unknown shell '$shellname' — add $BIN_PATH to PATH yourself"
-          return 0 ;;
-  esac
+  detect_shell_rc
+  shellname="$SHELL_NAME"
+  rc="$SHELL_RC"
+  if [[ -z "$rc" ]]; then
+    yellow "skip       unknown shell '$shellname' — add $BIN_PATH to PATH yourself"
+    return 0
+  fi
   [[ -f "$rc" ]] || { (( DRY )) || : > "$rc"; }
 
   # Write $HOME symbolically when BIN_PATH is still the plain default (portable
