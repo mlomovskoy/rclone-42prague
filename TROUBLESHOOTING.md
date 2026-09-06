@@ -27,6 +27,44 @@ overwriting), so it's always safe to run.
 
 ---
 
+## A `42*` command fails with an rclone `--password-command` / config error, quoting a path that looks wrong
+
+```
+ERROR : --password-command stderr: The argument 'C:\Users\<you>\bin\rclone-password-helper.ps1'
+        to the -File parameter does not exist. ...
+CRITICAL: Failed to load config file "...\rclone.conf": password command failed: ...
+```
+
+**Means:** the *terminal you're typing in* still has an old `RCLONE_PASSWORD_COMMAND`
+baked into its environment, from before `~/.bashrc` was last changed (e.g. after a
+`42password` re-run that moved where the helper script lives, or any edit to that
+line). `export`ed variables are set once when a shell starts; editing `.bashrc`
+afterward never reaches a shell that's already running — only new ones.
+
+This isn't specific to the password command; the same thing happens for a stale
+`PATH` after `42sync_install.sh` changes `bin-path`, or a stale value for any other
+`configure-set` override. If a `42*` command's behavior doesn't match what's
+actually in `~/.bashrc` right now, suspect this before suspecting the script.
+
+**Confirm it:**
+
+```bash
+echo "$RCLONE_PASSWORD_COMMAND"        # your current shell's value
+grep RCLONE_PASSWORD_COMMAND ~/.bashrc # what a NEW shell would get
+```
+
+If they differ, that's it.
+
+**Fix:**
+
+```bash
+source ~/.bashrc
+```
+
+or just open a new terminal. Either picks up every current value, not just this one.
+
+---
+
 ## `cannot find prior Path1 or Path2 listings`
 
 ```

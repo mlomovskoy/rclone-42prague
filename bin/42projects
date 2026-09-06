@@ -10,12 +10,16 @@
 
 set -uo pipefail
 
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-green()  { printf '\033[32m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-die()    { red "$*" >&2; exit 1; }
-
 logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+
+# Route every message through logmsg -- previously these were print-only, so
+# a die() (a real failure, by far the most important thing to have a record
+# of) never reached the log at all, only the terminal. Matches 42links'/
+# 42password's pattern; this was the one script out of step with it.
+red()    { printf '\033[31m%s\033[0m\n' "$*"; logmsg "$*"; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; logmsg "$*"; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*"; logmsg "$*"; }
+die()    { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
 
 VERBS=(list diff include exclude delete-check delete-apply)
 
@@ -141,7 +145,11 @@ newest_local_file() {  # dir -> "YYYY-MM-DD HH:MM  relative/path" of the newest 
 ALL_NAMES=()
 build_listing() {
   local incl loc drv
-  incl="$(included_names)"; loc="$(local_names)"; drv="$(drive_names)"
+  incl="$(included_names)"; loc="$(local_names)"
+  drv="$(drive_names)" \
+    || die "Could not list $REMOTE_PATH -- see the rclone error above (often a
+password/config problem, or no network). Showing local-only status below
+would be misleading, so refusing instead of guessing Drive is simply empty."
   ALL_NAMES=()
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
@@ -151,7 +159,11 @@ build_listing() {
 
 print_listing() {
   local incl loc drv i name here there where
-  incl="$(included_names)"; loc="$(local_names)"; drv="$(drive_names)"
+  incl="$(included_names)"; loc="$(local_names)"
+  drv="$(drive_names)" \
+    || die "Could not list $REMOTE_PATH -- see the rclone error above (often a
+password/config problem, or no network). Showing local-only status below
+would be misleading, so refusing instead of guessing Drive is simply empty."
   echo
   printf '  %-4s %-9s %-24s %-16s %s\n' ID STATUS FOLDER WHERE ''
   i=0
