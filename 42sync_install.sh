@@ -24,9 +24,21 @@
 # install on a machine without gpg, opt out explicitly with
 # INSTALL_ALLOW_UNSIGNED=1 — that falls back to the SHA256 alone.
 #
-# This installs tools. It does NOT configure the remote or move any data —
-# `rclone config` and `42sync seed` stay manual because both need decisions
-# only you can make. The summary at the end says which are still outstanding.
+# gh (GitHub CLI) is installed the same way, and pinned the same way
+# (INSTALL_GH_VERSION=2.100.0 ./42sync_install.sh apply) — but GitHub does not
+# publish a GPG-signed checksums file for gh's own releases the way rclone
+# does (only a plain SHA256 list; the "Release attestation" asset is a
+# Sigstore/SLSA bundle verified via `gh attestation verify`, which needs gh
+# already installed — no use for bootstrapping the first install of it). So
+# gh has no signed path to fall back from in the first place: installing it
+# at all requires the same INSTALL_ALLOW_UNSIGNED=1 opt-in rclone uses for its
+# fallback, accepting checksum-only verification deliberately rather than
+# defaulting into a lower bar than rclone gets.
+#
+# This installs tools. It does NOT configure the remote, authenticate gh, or
+# move any data — `rclone config`, `gh auth login`, and `42sync seed` stay
+# manual because each needs decisions only you can make. The summary at the
+# end says which are still outstanding.
 
 set -euo pipefail
 
@@ -88,7 +100,7 @@ print_verbs() {
 
   apply       install or update whatever needs it
   check       dry run: show what would happen, change nothing
-  reinstall   reinstall rclone even when the wanted version is already there
+  reinstall   reinstall rclone/gh even when the wanted version is already there
 
   configure-set <name> <value>  set a per-machine override, e.g.:
                                    ./42sync_install.sh configure-set bin-path /opt/mybin
@@ -453,6 +465,188 @@ Nothing was installed. Delete any partial download and try again."
   green "installed  rclone v$want -> ${BIN_PATH/#$HOME/\~}/rclone$EXE"
 }
 
+# ----------------------------------------------------------------------- gh ---
+
+# gh ships zip archives on macOS/Windows but a tar.gz on Linux — unzip_archive
+# only knows zip, so this dispatches on extension rather than teaching it a
+# second format inline. Not shared with rclone's own unzip_archive call (which
+# stays a hard die() on failure, appropriate for the toolkit's core
+# dependency) — install_gh treats every failure as recoverable instead, so
+# this reports rather than dies.
+extract_archive() {  # archive destdir
+  case "$1" in
+    *.zip)
+      unzip_archive "$1" "$2"
+      ;;
+    *.tar.gz|*.tgz)
+      have tar || { red "Need tar to unpack $1."; return 1; }
+      mkdir -p "$2"
+      tar -xzf "$1" -C "$2"
+      ;;
+    *)
+      red "Don't know how to extract $1."
+      return 1
+      ;;
+  esac
+}
+
+# Same reasoning as detect_rclone: check $BIN_PATH before PATH so a gh this
+# script installed a moment ago is found even before a fresh shell puts
+# $BIN_PATH on PATH. Sets GH_PATH and GH_VER; not value-returning for the same
+# reason detect_rclone isn't.
+GH_PATH=""
+GH_VER=""
+detect_gh() {
+  GH_PATH=""; GH_VER=""
+  if   [[ -x "$BIN_PATH/gh$EXE" ]]; then GH_PATH="$BIN_PATH/gh$EXE"
+  elif have gh;                    then GH_PATH="$(command -v gh)"
+  else return 0
+  fi
+  # `gh --version` prints e.g. "gh version 2.100.0 (2026-08-20)" on its first line.
+  GH_VER="$("$GH_PATH" --version 2>/dev/null | head -1 | awk '{print $3}')"
+}
+
+# gh install failures are never fatal to the rest of this script: unlike
+# rclone, nothing implemented yet depends on gh (ADR-0002/0003 in
+# design/adr/ are still Proposed), so a policy gate or a bad download here
+# must not block rclone, the 42* scripts, or shell setup from installing.
+# Reports loudly and adds a TODO instead of calling die().
+gh_fail() {  # message
+  red "$*"
+  logmsg "gh install: $*"
+  note_todo "gh CLI was not installed — see the log for details, then re-run: ./42sync_install.sh apply"
+}
+
+# Sets EXPECTED_SHA to the checksum for $2 in $1, or fails via gh_fail. See
+# the header comment for why gh gets no signature check at all, unlike
+# rclone's verify_sums: there is no signed checksums file to verify in the
+# first place, so this always requires the same opt-in rclone's fallback does
+# rather than silently running one tier weaker than rclone by default.
+EXPECTED_SHA=""
+verify_gh_sums() {  # sumsfile asset
+  local sums="$1" asset="$2"
+  EXPECTED_SHA=""
+
+  if [[ "${INSTALL_ALLOW_UNSIGNED:-0}" != "1" ]]; then
+    gh_fail "Cannot verify gh's authenticity: GitHub does not publish a signed
+checksums file for gh CLI releases (only a plain SHA256 list, unlike
+rclone's PGP-signed SHA256SUMS). Refusing to install unverified.
+
+To install anyway, accepting that only the SHA256 is checked — which catches
+a corrupted download but not a tampered mirror:
+
+  INSTALL_ALLOW_UNSIGNED=1 ./42sync_install.sh apply"
+    return 1
+  fi
+  yellow "  warn: signature NOT checked (gh publishes no signed checksums), INSTALL_ALLOW_UNSIGNED=1 is set"
+  say   "        The SHA256 still catches a corrupted download, but it comes from"
+  say   "        the same server as the archive — it cannot catch a tampered mirror."
+
+  EXPECTED_SHA="$(awk -v a="$asset" '$2 == a {print $1; exit}' "$sums")"
+  if [[ -z "$EXPECTED_SHA" ]]; then
+    gh_fail "No checksum for $asset in $(basename "$sums") — wrong version or platform?"
+    return 1
+  fi
+}
+
+install_gh() {
+  local want installed asset url expected actual gh_os ext gh_bin_found
+
+  case "$OS" in
+    linux)   gh_os=linux;   ext=tar.gz ;;
+    osx)     gh_os=macOS;   ext=zip ;;
+    windows) gh_os=windows; ext=zip ;;
+  esac
+
+  want="${INSTALL_GH_VERSION:-}"
+  if [[ -z "$want" ]]; then
+    TMP="${TMP:-$(mktemp -d)}"
+    if ! fetch "https://api.github.com/repos/cli/cli/releases/latest" "$TMP/gh-latest.json"; then
+      gh_fail "Could not reach the GitHub API to find the latest gh CLI version — check the network, or pin INSTALL_GH_VERSION."
+      return 1
+    fi
+    # Minimal JSON, no jq dependency: pull the "tag_name": "vX.Y.Z" field and
+    # strip the leading v, same approach as rclone's version.txt parsing.
+    want="$(grep -m1 '"tag_name"' "$TMP/gh-latest.json" | sed -E 's/.*: *"v?([^"]+)".*/\1/')"
+  fi
+  if [[ -z "$want" ]]; then
+    gh_fail "Could not determine which gh CLI version to install."
+    return 1
+  fi
+
+  detect_gh
+  installed="$GH_VER"
+
+  if [[ -n "$installed" ]] && (( ! FORCE )); then
+    if [[ "$installed" == "$want" ]]; then
+      green "ok         gh v$installed already installed ($GH_PATH)"
+      return 0
+    fi
+    yellow "update     gh v$installed -> v$want"
+  elif [[ -n "$installed" ]]; then
+    yellow "reinstall  gh v$installed -> v$want (force)"
+  else
+    yellow "install    gh v$want"
+  fi
+
+  if (( DRY )); then
+    say "  would download gh_${want}_${gh_os}_${ARCH}.$ext and install it"
+    say "  to ${BIN_PATH/#$HOME/\~}/gh$EXE after checking its SHA256"
+    if [[ "${INSTALL_ALLOW_UNSIGNED:-0}" == "1" ]]; then
+      yellow "  WITHOUT a signature check — gh publishes no signed checksums, and"
+      yellow "  INSTALL_ALLOW_UNSIGNED=1 is set"
+    else
+      red    "  it would be SKIPPED: gh publishes no signed checksums, so this needs"
+      red    "  INSTALL_ALLOW_UNSIGNED=1 too. See the header comment."
+    fi
+    return 0
+  fi
+
+  TMP="${TMP:-$(mktemp -d)}"
+  asset="gh_${want}_${gh_os}_${ARCH}.$ext"
+  url="https://github.com/cli/cli/releases/download/v$want/$asset"
+
+  say "  downloading $asset"
+  if ! fetch "$url" "$TMP/$asset"; then
+    gh_fail "Download failed: $url"
+    return 1
+  fi
+  if ! fetch "https://github.com/cli/cli/releases/download/v$want/gh_${want}_checksums.txt" "$TMP/gh_checksums.txt"; then
+    gh_fail "Could not fetch checksums for gh v$want — refusing to install unverified."
+    return 1
+  fi
+
+  verify_gh_sums "$TMP/gh_checksums.txt" "$asset" || return 1
+  expected="$EXPECTED_SHA"
+
+  actual="$(sha256_of "$TMP/$asset")"
+  if [[ "$actual" != "$expected" ]]; then
+    logmsg "checksum expected=$expected actual=$actual asset=$asset"
+    gh_fail "Checksum mismatch for $asset (expected $expected, got $actual). Nothing was installed."
+    return 1
+  fi
+  say "  checksum ok"
+
+  if ! extract_archive "$TMP/$asset" "$TMP/gh-x"; then
+    gh_fail "Failed to unpack $asset."
+    return 1
+  fi
+  # Not a fixed path: gh's Linux tar.gz and macOS zip wrap everything in a
+  # gh_<ver>_<os>_<arch>/ folder, but the Windows zip is flat (bin/gh.exe at
+  # the archive root, no wrapper) — confirmed by inspecting v2.100.0's actual
+  # assets, not documented anywhere obvious. Searching for bin/gh$EXE is
+  # robust to that asymmetry, and to it changing again in a future release.
+  gh_bin_found="$(find "$TMP/gh-x" -type f -name "gh$EXE" -path '*/bin/*' 2>/dev/null | head -1)"
+  if [[ -z "$gh_bin_found" ]]; then
+    gh_fail "Archive did not contain the expected gh binary."
+    return 1
+  fi
+
+  mkdir -p "$BIN_PATH"
+  install_file "$gh_bin_found" "$BIN_PATH/gh$EXE"
+  green "installed  gh v$want -> ${BIN_PATH/#$HOME/\~}/gh$EXE"
+}
+
 # ----------------------------------------------------------------- scripts ---
 
 # Installs one file at a $BIN_PATH-relative subpath (e.g.
@@ -606,6 +800,25 @@ post_checks() {
     note_todo "Then encrypt it: rclone config -> s) Set configuration password"
   fi
 
+  # ---- gh ----
+  local gh_bin
+  if   [[ -x "$BIN_PATH/gh$EXE" ]]; then gh_bin="$BIN_PATH/gh$EXE"
+  elif have gh;                    then gh_bin="$(command -v gh)"
+  else gh_bin=""
+  fi
+  if [[ -z "$gh_bin" ]]; then
+    yellow "todo       gh CLI not installed"
+    # A real failed apply already added its own specific TODO via gh_fail();
+    # this generic one only fires in check mode (where nothing was attempted
+    # yet) so it doesn't duplicate that message.
+    (( DRY )) && note_todo "gh CLI would be installed by 'apply' (needs INSTALL_ALLOW_UNSIGNED=1 — see header comment)"
+  elif "$gh_bin" auth status >/dev/null 2>&1; then
+    green "ok         gh CLI authenticated"
+  else
+    yellow "todo       gh CLI installed but not authenticated"
+    note_todo "Authenticate gh: gh auth login"
+  fi
+
   if [[ ! -d "$LOCAL_PATH" ]]; then
     note_todo "$LOCAL_PATH is missing — if that is expected: 42sync seed"
   elif [[ ! -f "$LOCAL_PATH/RCLONE_TEST" ]]; then
@@ -630,6 +843,7 @@ say "Target: $OS-$ARCH, installing into ${BIN_PATH/#$HOME/\~}"
 echo
 
 install_rclone
+install_gh || true
 install_scripts
 setup_shell
 post_checks
