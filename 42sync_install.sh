@@ -123,6 +123,12 @@ source "$REPO_BINDIR/42-internal/lib/42-common.sh"
 # just call these. See that file for what they touch and why.
 source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
 
+# ensure_line() -- setup_shell() below uses this to write the PATH and
+# tab-completion lines. Shared with 42password, which uses it for
+# RCLONE_PASSWORD_COMMAND -- same "replace the old value instead of
+# appending a second one alongside it" fix applies to both.
+source "$REPO_BINDIR/42-internal/lib/42-ensure-line.sh"
+
 # Same directory every 42* script logs to, so there is one place to look.
 # Prefixed with this script's own name (".sh" stripped) so logs stay
 # identifiable even though "apply"/"check" are shared verb names with other
@@ -272,30 +278,6 @@ detect_rclone() {
     yellow "warn       found $RCLONE_PATH but could not read its version"
     say   "           A stray RCLONE_* variable in your environment will do this:"
     say   "           rclone reads RCLONE_<FLAG> as --<flag>. Check with: env | grep ^RCLONE_"
-  fi
-}
-
-count_line() {  # file line -> how many exact matches
-  [[ -f "$1" ]] || { echo 0; return 0; }
-  grep -Fxc -- "$2" "$1" 2>/dev/null || true
-}
-
-ensure_line() {  # file line description
-  local file="$1" line="$2" what="$3" n
-  n="$(count_line "$file" "$line")"
-  if (( n > 1 )); then
-    yellow "duplicate  $what appears $n times in ${file/#$HOME/\~} — harmless, but tidy it up"
-    return 0
-  fi
-  if (( n == 1 )); then
-    green "ok         $what already in ${file/#$HOME/\~}"
-    return 0
-  fi
-  if (( DRY )); then
-    yellow "would add  $what to ${file/#$HOME/\~}"
-  else
-    printf '%s\n' "$line" >> "$file"
-    green "added      $what to ${file/#$HOME/\~}"
   fi
 }
 
@@ -561,20 +543,26 @@ setup_shell() {
   # escaped either way, so it expands at shell-startup time, not now.
   local bin_path_rc="$BIN_PATH"
   [[ "$BIN_PATH" == "$HOME/bin" ]] && bin_path_rc='$HOME/bin'
-  ensure_line "$rc" "export PATH=\"$bin_path_rc:\$PATH\"" "PATH entry for ${BIN_PATH/#$HOME/\~}"
+  # Patterns match ANY line this toolkit would ever write for that one
+  # setting, whatever bin-path it names -- so a bin-path change replaces
+  # the old line instead of leaving it behind alongside a new one.
+  ensure_line "$rc" '^export PATH="[^"]*:\$PATH"$' \
+    "export PATH=\"$bin_path_rc:\$PATH\"" "PATH entry for ${BIN_PATH/#$HOME/\~}"
 
   # Tab-completion for every 42* script's verbs. bash only -- zsh has its own,
   # incompatible completion system (compdef/_arguments, not
   # complete/compgen/COMPREPLY), so this line would be silently inert there
   # even if added; skip it rather than write a line that does nothing.
   if [[ "$shellname" == bash ]]; then
-    ensure_line "$rc" "source \"$bin_path_rc/42-internal/lib/42-completions.bash\"" 'tab-completion for 42* scripts'
+    ensure_line "$rc" '^source ".*/42-internal/lib/42-completions\.bash"$' \
+      "source \"$bin_path_rc/42-internal/lib/42-completions.bash\"" 'tab-completion for 42* scripts'
   fi
 
   # zsh does not treat '#' as a comment interactively, so pasted commands with
   # trailing comments arrive as arguments. This has caused real confusion here.
+  # Never changes, so the match pattern is just the line itself.
   if [[ "$shellname" == zsh ]]; then
-    ensure_line "$rc" 'setopt interactive_comments' 'interactive_comments'
+    ensure_line "$rc" '^setopt interactive_comments$' 'setopt interactive_comments' 'interactive_comments'
   fi
 
   case ":$PATH:" in
