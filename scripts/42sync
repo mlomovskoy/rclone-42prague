@@ -293,8 +293,31 @@ to the other, which resurrects anything you deleted or renamed if the two
 sides genuinely diverged rather than just never having met before.
 EOF
     elif grep -q 'too many deletes' <<<"$this_run"; then
-      red "Delete guard tripped."
-      cat <<EOF
+      # SKIP_ARGS is only ever non-empty here if THIS call came from 'apply'/
+      # 'check' excluding a dirty repo -- in that case the "deletes" bisync
+      # sees are the whole excluded repo (its .git internals included)
+      # vanishing from view at once, not a real rename. force doesn't fix
+      # this (it doesn't even hit this guard, since it never applies the
+      # skip in the first place) -- dirty-apply does, by not excluding
+      # anything. See design/open-questions.md #9.
+      if (( ${#SKIP_ARGS[@]} )); then
+        red "Delete guard tripped -- likely the dirty-repo skip, not a rename."
+        cat <<EOF
+
+Excluding ${#DIRTY_REPOS[@]} dirty repo(s) this run made that much of the tree --
+their files, .git internals included -- disappear from view all at once. That
+reads exactly like a mass deletion to the guard, even though nothing was
+actually deleted; it's just this run's transient skip working as designed.
+
+  Sync everything, dirty repos included:  42sync dirty-check   (then dirty-apply)
+  Or commit the dirty repo(s) first, then a plain 'apply' needs no skip at all.
+
+force-check/force-apply will NOT help here -- that overrides the guard for a
+genuine rename, which this is not.
+EOF
+      else
+        red "Delete guard tripped."
+        cat <<EOF
 
 More than 25% of files would be removed. Usually this means you renamed or moved
 directories — bisync compares by path, so a rename reads as mass deletion plus
@@ -302,6 +325,7 @@ mass creation.
 
 Check the log, then:  42sync force-check   (then force-apply once it looks right)
 EOF
+      fi
     elif grep -q 'Access test failed' <<<"$this_run"; then
       red "Access check failed — the RCLONE_TEST marker is missing on one side."
       echo
@@ -348,6 +372,7 @@ Nothing was seeded. Fix the error above and run '42sync seed' again."
     # 'seed' creates this as part of pulling from an empty folder. Here neither
     # side is necessarily empty, so create it directly if this machine is new.
     [[ -f "$LOCAL/RCLONE_TEST" ]] || touch "$LOCAL/RCLONE_TEST"
+    check_repos
     yellow "RESYNC MODE"
     cat <<'EOF'
 Use this once, the first time this machine syncs against a Drive folder that
@@ -362,6 +387,16 @@ overwritten that way.
 
 After this, every future sync is just: 42sync apply
 EOF
+    # Same reasoning as force-check/force-apply above: resync does not apply
+    # the dirty-repo skip either, so say so loudly rather than let uncommitted
+    # content go to Drive as a silent side effect. See open-questions.md #12.
+    if (( ${#DIRTY_REPOS[@]} )); then
+      echo
+      red "These ${#DIRTY_REPOS[@]} repo(s) are dirty, and RESYNC does not skip them the way"
+      red "plain apply does -- their uncommitted content will be synced too:"
+      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      echo "Commit first if that is not what you want, or proceed knowingly."
+    fi
     echo
 
     if [[ "$MODE" == resync-check ]]; then
@@ -456,6 +491,7 @@ EOF
 
   force-check|force-apply)
     require_local
+    check_repos
     yellow "FORCE MODE"
     cat <<'EOF'
 Use this only when bisync aborted with "too many deletes" because YOU renamed or
@@ -467,6 +503,18 @@ Do NOT use this if the deletions surprise you. Investigate instead.
 Check that every "File was deleted" line is an OLD path you renamed, and every
 "File is new" line is its replacement.
 EOF
+    # Deliberately NOT the same transient skip 'apply'/'check' use: force exists
+    # to push a real rename through even if the renamed repo happens to be
+    # dirty, and excluding it here would silently defeat that. Loud instead of
+    # silent -- see design/open-questions.md #12 (found via real-data testing:
+    # an uncommitted rename went to Drive silently before this warning existed).
+    if (( ${#DIRTY_REPOS[@]} )); then
+      echo
+      red "These ${#DIRTY_REPOS[@]} repo(s) are dirty, and FORCE does not skip them the way"
+      red "plain apply does -- their uncommitted content will be synced too:"
+      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      echo "Commit first if that is not what you want, or proceed knowingly."
+    fi
     echo
 
     if [[ "$MODE" == force-check ]]; then
@@ -484,7 +532,6 @@ EOF
         read -r -p "Type FORCE to apply it for real: " reply || true
         [[ "$reply" == "FORCE" ]] || die "Aborted — nothing was changed."
       fi
-      check_repos
       run_bisync "${COMMON[@]}" --force
       green "Forced sync complete. Normal 'apply' works again from here."
     fi

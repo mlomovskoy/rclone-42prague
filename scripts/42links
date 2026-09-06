@@ -35,6 +35,30 @@ yellow(){ printf '\033[33m%s\033[0m\n' "$*"; logmsg "$*"; }
 die()   { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
 logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
+# On Windows, default Git-Bash/MSYS `ln -s` for a directory can silently
+# create something bash's own `[[ -L ]]` test never recognizes as a symlink
+# -- a real reparse point that works fine for reading through, but leaves
+# every later `-L` check in this script (status, the repoint-if-changed
+# branch above, clean-check/clean-apply) unable to recognize or manage it
+# again. Confirmed this happens even on an account that already HAS
+# SeCreateSymbolicLinkPrivilege -- MSYS just doesn't attempt the privileged,
+# properly-detectable path by default. See design/open-questions.md #10.
+#
+# Try that privileged path explicitly first (MSYS=winsymlinks:nativestrict);
+# it is a no-op on Linux/macOS, where this whole problem does not exist. Only
+# fall back to plain `ln -s` if the strict attempt is refused outright (no
+# privilege and no Developer Mode) -- a working-but-unmanageable link still
+# beats no link at all, but say so plainly instead of claiming success.
+make_link() {  # target link -> sets LINK_MANAGED=1 if -L will recognize it, else 0
+  local target="$1" link="$2"
+  LINK_MANAGED=1
+  if MSYS=winsymlinks:nativestrict ln -sfn "$target" "$link" 2>/dev/null && [[ -L "$link" ]]; then
+    return 0
+  fi
+  LINK_MANAGED=0
+  ln -sfn "$target" "$link"
+}
+
 VERBS=(apply check clean-check clean-apply status)
 
 print_verbs() {
@@ -119,14 +143,28 @@ Run '42sync seed' first, or fix BASE at the top of this script."
           if [[ "$current" == "$target" ]]; then
             green "ok       $link"
           else
-            [[ $DRY -eq 1 ]] || ln -sfn "$target" "$link"
-            green "repoint  $link  (was -> $current)"
+            if [[ $DRY -eq 1 ]]; then
+              green "repoint  $link  (was -> $current)"
+            else
+              make_link "$target" "$link"
+              green "repoint  $link  (was -> $current)"
+            fi
           fi
         elif [[ -e "$link" ]]; then
           yellow "SKIPPED  $link  (exists and is not a symlink — left untouched)"
         else
-          [[ $DRY -eq 1 ]] || ln -s "$target" "$link"
-          green "created  $link"
+          if [[ $DRY -eq 1 ]]; then
+            green "created  $link"
+          else
+            make_link "$target" "$link"
+            if (( LINK_MANAGED )); then
+              green "created  $link"
+            else
+              yellow "created  $link  (as a working link this OS wouldn't let bash create as a
+           real symlink -- it works, but this script cannot manage it again;
+           see TROUBLESHOOTING.md)"
+            fi
+          fi
         fi
       done
     done

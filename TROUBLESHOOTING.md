@@ -364,6 +364,30 @@ echo -n "rclone config password: "; read -s RCLONE_PW; echo
 
 ---
 
+## `42links` says "created", but `42links status` shows "real dir (not a symlink)"
+
+**Means:** on this Windows account, `ln -s` for a directory can succeed and produce
+something that genuinely works for reading through — but isn't a real symlink bash's
+own `[[ -L ]]` test recognizes. `42links` now tries the privileged, properly-detectable
+path first (`MSYS=winsymlinks:nativestrict`) and only falls back to this if that is
+refused outright — in which case it labels the link `created (as a working link this OS
+wouldn't let bash create as a real symlink)` rather than claiming an ordinary success.
+
+**If you see the plain `created` message** (not the fallback warning), you have a real,
+managed symlink and nothing here applies.
+
+**If you see the fallback warning:** the link works — `cd`, file access, everything
+resolves through it correctly — but `42links status`/`clean-check`/`clean-apply` can
+never recognize it as one of theirs again, since they all branch on `[[ -L ]]` too. This
+is a Windows/MSYS limitation, not a bug to route around by hand: check whether Developer
+Mode (Settings → Privacy & security → For developers) is off, or grant the account
+`SeCreateSymbolicLinkPrivilege` directly via `secpol.msc` → Local Policies → User Rights
+Assignment → Create symbolic links (same fix as the Piscine `.rclonelink` symlink-privilege
+entry below) — then remove the existing fallback links and re-run `42links apply` to get
+real ones.
+
+---
+
 ## `Can't follow symlink without -L/--copy-links`
 
 **Means:** a symlink was **skipped**. It is a NOTICE, not an error, and easy to miss
