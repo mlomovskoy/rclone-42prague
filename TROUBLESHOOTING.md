@@ -30,23 +30,31 @@ overwriting), so it's always safe to run.
 ## A `42*` command fails with an rclone `--password-command` / config error, quoting a path that looks wrong
 
 ```
-ERROR : --password-command stderr: The argument 'C:\Users\<you>\bin\rclone-password-helper.ps1'
+ERROR : --password-command stderr: The argument 'C:\Users\<you>\.config\_projects-sync-rclone\rclone-password-helper.ps1'
         to the -File parameter does not exist. ...
 CRITICAL: Failed to load config file "...\rclone.conf": password command failed: ...
 ```
 
-**Means:** the *terminal you're typing in* still has an old `RCLONE_PASSWORD_COMMAND`
+**Means:** the *terminal you're typing in* has an old `RCLONE_PASSWORD_COMMAND`
 baked into its environment, from before `~/.bashrc` was last changed (e.g. after a
 `42password` re-run that moved where the helper script lives, or any edit to that
 line). `export`ed variables are set once when a shell starts; editing `.bashrc`
 afterward never reaches a shell that's already running — only new ones.
 
-This isn't specific to the password command; the same thing happens for a stale
-`PATH` after `42sync_install.sh` changes `bin-path`, or a stale value for any other
-`configure-set` override. If a `42*` command's behavior doesn't match what's
-actually in `~/.bashrc` right now, suspect this before suspecting the script.
+**This no longer affects `42sync`/`42projects`/`42password` themselves** — they
+each compute `RCLONE_PASSWORD_COMMAND` fresh from the current config on every
+invocation (`42-internal/lib/42-password-command.sh`) rather than trusting
+whatever the shell happened to inherit, so a stale export in your terminal
+can't make them use the wrong helper. It still fully applies if you run
+`rclone` directly by hand in that same stale terminal — nothing recomputes
+the variable for you there.
 
-**Confirm it:**
+A stale `PATH` after `42sync_install.sh` changes `bin-path`, or a stale value
+for any other `configure-set` override some other tool of yours reads
+straight from the environment, is the same underlying cause and the same
+fix — those aren't recomputed by anything.
+
+**Confirm it (for a direct `rclone` invocation):**
 
 ```bash
 echo "$RCLONE_PASSWORD_COMMAND"        # your current shell's value

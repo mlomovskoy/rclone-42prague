@@ -51,6 +51,7 @@ Three habits still matter:
 
 ```
 README.md                    this file
+CHANGELOG.md                 notable changes, newest first
 TROUBLESHOOTING.md           every error hit during setup, and the fix
 42sync_install.sh            installs everything below, plus rclone itself
                               (at the repo root, not bin/, so it's the
@@ -299,7 +300,7 @@ campus (your own laptop).
 # 1. Install rclone and every 42* script into ~/bin -- no root required
 git clone https://github.com/<your-github-username>/rclone-42prague.git
 cd rclone-42prague
-# optional: ./42sync_install.sh configure-set bindir ... to install somewhere
+# optional: ./42sync_install.sh configure-set bin-path ... to install somewhere
 # other than ~/bin, or any other override -- see Configuration, Reconfiguring
 # a single machine. Skip this if the defaults are fine.
 ./42sync_install.sh apply
