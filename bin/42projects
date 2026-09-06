@@ -246,10 +246,11 @@ case "$MODE" in
     print_listing
     cat <<EOF
 
-  42projects diff    <ID>   compare the two copies before you decide
-  42projects include <ID>   carry it on this machine
-  42projects exclude <ID>   stop carrying it here; Drive copy untouched
-  42projects delete-check <ID>   preview removing it from Drive, for every machine
+  42projects diff          <ID>            compare the two copies before you decide
+  42projects include       <ID>            carry it on this machine
+  42projects exclude       <ID>            stop carrying it here; Drive copy untouched
+  42projects delete-check  <ID>            preview removing it from Drive, for every machine
+  42projects delete-apply  <ID> [DELETE]   apply it for real
 EOF
     ;;
 
