@@ -92,8 +92,24 @@ prune_logs() {
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
 
-rule_for()  { printf -- '- /%s/**' "$1"; }
-excluded_names() { grep -E '^- /' "$PROJECT_FILTERS" 2>/dev/null | sed 's|^- /||; s|/\*\*$||' | sort -u; }
+# Default is EXCLUDED: $PROJECT_FILTERS always ends with a blanket
+# "- /*/**" (see bin/42-internal/defaults/filters/projects-local.txt), so a
+# project syncs on this machine only if it has its own "+ /<name>/**" line
+# ABOVE that blanket rule -- rclone filters take the first matching rule, so
+# an include below the blanket line would never be reached. add_include_rule
+# keeps that ordering invariant on every write; a plain grep -vxF removal
+# (see 'exclude' below) is safe regardless of position.
+BLANKET_RULE='- /*/**'
+rule_for()  { printf -- '+ /%s/**' "$1"; }
+included_names() { grep -E '^\+ /' "$PROJECT_FILTERS" 2>/dev/null | sed 's|^+ /||; s|/\*\*$||' | sort -u; }
+add_include_rule() {  # rule
+  local rule="$1" tmpf
+  tmpf="$(mktemp)"
+  grep -vxF -- "$BLANKET_RULE" "$PROJECT_FILTERS" > "$tmpf"
+  printf '%s\n' "$rule" >> "$tmpf"
+  printf '%s\n' "$BLANKET_RULE" >> "$tmpf"
+  mv "$tmpf" "$PROJECT_FILTERS"
+}
 # A bash glob, not `find -printf '%f\n'`: -printf is a GNU findutils
 # extension that BSD find (macOS) rejects, which made this list silently
 # empty on macOS instead of erroring.
@@ -124,18 +140,18 @@ newest_local_file() {  # dir -> "YYYY-MM-DD HH:MM  relative/path" of the newest 
 # resolution always agree with each other.
 ALL_NAMES=()
 build_listing() {
-  local excl loc drv
-  excl="$(excluded_names)"; loc="$(local_names)"; drv="$(drive_names)"
+  local incl loc drv
+  incl="$(included_names)"; loc="$(local_names)"; drv="$(drive_names)"
   ALL_NAMES=()
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     ALL_NAMES+=("$name")
-  done < <(printf '%s\n%s\n%s\n' "$loc" "$drv" "$excl" | grep -v '^$' | sort -u)
+  done < <(printf '%s\n%s\n%s\n' "$loc" "$drv" "$incl" | grep -v '^$' | sort -u)
 }
 
 print_listing() {
-  local excl loc drv i name here there where
-  excl="$(excluded_names)"; loc="$(local_names)"; drv="$(drive_names)"
+  local incl loc drv i name here there where
+  incl="$(included_names)"; loc="$(local_names)"; drv="$(drive_names)"
   echo
   printf '  %-4s %-9s %-24s %-16s %s\n' ID STATUS FOLDER WHERE ''
   i=0
@@ -145,16 +161,18 @@ print_listing() {
     grep -qxF -- "$name" <<<"$loc" && here=1
     grep -qxF -- "$name" <<<"$drv" && there=1
     where="local + Drive"; (( here )) || where="Drive only"; (( there )) || where="local only"
-    if grep -qxF -- "$name" <<<"$excl"; then
+    if grep -qxF -- "$name" <<<"$incl"; then
       if (( here == 0 && there == 0 )); then
         printf '  %-4s \033[33m%-9s\033[0m %-24s %-16s %s\n' "$i" stale "$name" "-" "rule matches nothing; drop it"
-      elif (( here && there )); then
+      else
+        printf '  %-4s \033[32m%-9s\033[0m %-24s %-16s\n' "$i" synced "$name" "$where"
+      fi
+    else
+      if (( here && there )); then
         printf '  %-4s \033[33m%-9s\033[0m %-24s %-16s %s\n' "$i" excluded "$name" "$where" "both copies exist -> 42projects diff $i"
       else
         printf '  %-4s \033[33m%-9s\033[0m %-24s %-16s\n' "$i" excluded "$name" "$where"
       fi
-    else
-      printf '  %-4s \033[32m%-9s\033[0m %-24s %-16s\n' "$i" synced "$name" "$where"
     fi
   done
 }
@@ -190,6 +208,11 @@ case "$MODE" in
   # time. That is the only granularity offered on purpose: a rule is anchored to
   # the sync root, so a deeper path is easy to get wrong and fails silently when
   # you do.
+  #
+  # Default is EXCLUDED, deliberately -- a fresh machine, or a project new to
+  # Drive that this machine has never seen, starts off rather than silently
+  # pulling down everything that ever existed there. 'include' is what turns
+  # syncing on for one; nothing here is on by default.
   #
   # An exclusion is not a deletion and not a filter on Drive. The remote copy is
   # simply never looked at, so another machine keeps syncing it normally.
@@ -276,8 +299,9 @@ EOF
     t="$RESOLVED_NAME"
     rule="$(rule_for "$t")"
     if grep -qxF -- "$rule" "$PROJECT_FILTERS" 2>/dev/null; then
-      tmpf="$(mktemp)"
-      grep -vxF -- "$rule" "$PROJECT_FILTERS" > "$tmpf" && mv "$tmpf" "$PROJECT_FILTERS"
+      green "$t was already syncing — nothing to do."
+    else
+      add_include_rule "$rule"
       logmsg "included: $t"
       green "Now syncing on this machine: $t"
       if [[ -d "$LOCAL_PATH/$t" ]]; then
@@ -288,8 +312,6 @@ EOF
       else
         echo "The next sync pulls it down from Drive."
       fi
-    else
-      green "$t was already syncing — nothing to do."
     fi
     echo
     echo "Check before you sync:  42sync check"
@@ -300,11 +322,12 @@ EOF
     t="$RESOLVED_NAME"
     rule="$(rule_for "$t")"
     if grep -qxF -- "$rule" "$PROJECT_FILTERS" 2>/dev/null; then
-      green "Already excluded on this machine: $t"
-    else
-      printf '%s\n' "$rule" >> "$PROJECT_FILTERS"
+      tmpf="$(mktemp)"
+      grep -vxF -- "$rule" "$PROJECT_FILTERS" > "$tmpf" && mv "$tmpf" "$PROJECT_FILTERS"
       logmsg "excluded: $t"
       green "No longer syncing on this machine: $t"
+    else
+      green "Already excluded on this machine: $t"
     fi
     echo
     echo "The Drive copy is untouched — not transferred, not deleted — so any other"
@@ -327,7 +350,7 @@ EOF
     # in the README: if the folder is still SYNCED and still here, removing it
     # from Drive makes the next bisync read that as "deleted on Path2" and
     # delete your local copy too. Excluding it first is what protects it.
-    if [[ -d "$LOCAL_PATH/$t" ]] && ! grep -qxF -- "$(rule_for "$t")" "$PROJECT_FILTERS" 2>/dev/null; then
+    if [[ -d "$LOCAL_PATH/$t" ]] && grep -qxF -- "$(rule_for "$t")" "$PROJECT_FILTERS" 2>/dev/null; then
       die "'$t' is still syncing on this machine, and a copy is here:
   $LOCAL_PATH/$t
 
@@ -402,9 +425,10 @@ EOF
     green "Deleted from Drive: $t"
     if [[ -d "$LOCAL_PATH/$t" ]]; then
       echo
-      echo "The exclusion rule is deliberately left in place. It is now the only"
-      echo "thing stopping the next sync from uploading your local copy straight"
-      echo "back to Drive. Remove the local folder too if you are done with it:"
+      echo "There's no + rule for it, so the default (nothing syncs unless"
+      echo "included) is now the only thing stopping the next sync from"
+      echo "uploading your local copy straight back to Drive. Remove the local"
+      echo "folder too if you are done with it:"
       echo "  rm -rf \"$LOCAL_PATH/$t\""
     fi
     ;;

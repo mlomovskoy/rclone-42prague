@@ -411,13 +411,18 @@ in there would be mirrored to Drive as a `.rclonelink` holding a per-machine pat
 Not every project belongs on every machine. `~/Projects` is one folder on Drive, but a
 laptop project does not need to land on a campus machine. This is `42projects`, a
 separate script from `42sync` since it manages *what* syncs rather than doing the
-sync itself:
+sync itself.
+
+**Default is excluded.** A fresh machine, or a project new to Drive this machine has
+never seen, starts off — nothing pulls down until you explicitly include it. That is
+deliberate: choosing what a given machine actually carries beats discovering it already
+pulled down everything that ever existed on Drive.
 
 ```bash
 42projects list                    # numbered table: what syncs here, and what does not
 42projects diff    <ID>            # compare the two copies before deciding
+42projects include <ID>            # carry it on this machine
 42projects exclude <ID>            # stop carrying it here
-42projects include <ID>            # carry it again
 ```
 
 `<ID>` can always be left out — every verb shows the current list and prompts for one

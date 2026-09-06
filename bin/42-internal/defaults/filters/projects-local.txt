@@ -1,7 +1,15 @@
-# Projects NOT synced to this machine. Managed by: 42projects
+# Projects synced to this machine. Managed by: 42projects
 #
-# Excluding a path here stops it coming down to this machine. The copy on Drive
-# is left completely alone -- not transferred, not deleted -- so another machine
-# can keep using it. Re-include it and the next sync pulls it down.
+# Default is EXCLUDED: nothing here syncs until you explicitly include it --
+# a fresh machine, or a project new to Drive this machine has never seen,
+# starts off. Including a path pulls it down (or keeps pushing it up); the
+# copy on Drive is untouched either way -- excluding it again just stops
+# this machine looking at it, nothing is deleted anywhere.
 #
-# This file is per-machine and is never synced.
+# This file is per-machine and is never synced. Edit it by hand only if you
+# know what you're doing: every "+ /<name>/**" line must stay ABOVE the
+# "- /*/**" line at the bottom -- rclone filters take the first matching
+# rule, and everything below that line is the "nothing else syncs" default.
+# 42projects include/exclude keep that ordering for you automatically.
+
+- /*/**
