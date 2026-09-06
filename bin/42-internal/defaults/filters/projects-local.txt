@@ -1,0 +1,7 @@
+# Projects NOT synced to this machine. Managed by: 42projects
+#
+# Excluding a path here stops it coming down to this machine. The copy on Drive
+# is left completely alone -- not transferred, not deleted -- so another machine
+# can keep using it. Re-include it and the next sync pulls it down.
+#
+# This file is per-machine and is never synced.

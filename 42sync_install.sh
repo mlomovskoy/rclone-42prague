@@ -2,7 +2,7 @@
 #
 # 42sync_install.sh — put rclone and every 42* script in ~/bin. No root
 # required. Runs on Linux, macOS, and Windows via Git for Windows' bash. Lives
-# at the repo root (unlike the scripts it installs, which stay in scripts/
+# at the repo root (unlike the scripts it installs, which stay in bin/
 # and get copied into ~/bin) precisely so it's the first thing visible from a
 # fresh clone. Run with no arguments to see every verb this script accepts.
 #
@@ -19,8 +19,8 @@
 # `rclone version` fail.
 #
 # The rclone download is checked against a SHA256 that is itself PGP-verified
-# against rclone's release signing key (scripts/rclone-release-key.asc). This
-# is required: if the signature cannot be checked, nothing is installed. To
+# against rclone's release signing key (rclone-release-key.asc, repo root).
+# This is required: if the signature cannot be checked, nothing is installed. To
 # install on a machine without gpg, opt out explicitly with
 # INSTALL_ALLOW_UNSIGNED=1 — that falls back to the SHA256 alone.
 #
@@ -30,9 +30,11 @@
 
 set -euo pipefail
 
-BINDIR="$HOME/bin"
 BASE_URL="https://downloads.rclone.org"
-SCRIPTS=(42sync 42links 42password 42projects 42logs 42-completions.bash)
+# Directly-runnable commands only -- everything else lives under
+# bin/42-internal/ instead (installed via the loop below), distinguishing what
+# you actually run from what those commands merely depend on.
+SCRIPTS=(42sync 42links 42password 42projects 42logs)
 
 # rclone's release signing key. Cross-checked 2026-08-26 against rclone.org's
 # release_signing page, the same page's source in the rclone git repo, and
@@ -41,19 +43,31 @@ SCRIPTS=(42sync 42links 42password 42projects 42logs 42-completions.bash)
 RCLONE_KEY_FPR="FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA"
 
 # This file's own directory, so the installer works from a clone in any path.
-# The installer itself lives at the repo root; 42sync/42links/42password and
-# the signing key still live in scripts/ alongside each other.
+# The installer itself lives at the repo root, alongside the signing key --
+# the key is only ever read here, during this script's own rclone-download
+# check, and never copied into ~/bin, so it doesn't belong under bin/ with
+# everything that IS installed there. 42sync/42links/42password and the
+# shared lib do live in bin/ -- computed before sourcing the shared lib
+# below, since that lookup needs $REPO_BINDIR too.
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-SCRIPTS_DIR="$SRC/scripts"
-RCLONE_KEY_FILE="$SCRIPTS_DIR/rclone-release-key.asc"
+REPO_BINDIR="$SRC/bin"
+RCLONE_KEY_FILE="$SRC/rclone-release-key.asc"
+
+# BIN_PATH, LOG_PATH, KEEP_LOGS come from here -- shared with every other 42*
+# script. This installer is the one exception that can't use a plain
+# $SCRIPT_DIR-relative sourcing line for it (it lives at the repo root, not
+# alongside the scripts it installs), so it goes through $REPO_BINDIR instead.
+source "$REPO_BINDIR/42-internal/lib/42-common.sh"
+
+# configure_set/configure_reset/configure_show -- the configure-* verbs below
+# just call these. See that file for what they touch and why.
+source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
 
 # Same directory every 42* script logs to, so there is one place to look.
 # Prefixed with this script's own name (".sh" stripped) so logs stay
 # identifiable even though "apply"/"check" are shared verb names with other
-# scripts in the same $LOGDIR.
-LOGDIR="$HOME/.local/state/42sync"
-KEEP_LOGS=20
-mkdir -p "$LOGDIR"
+# scripts in the same $LOG_PATH.
+mkdir -p "$LOG_PATH"
 
 # Colour only on a terminal; the log gets plain text either way.
 if [[ -t 1 ]]; then
@@ -77,12 +91,12 @@ die()    { red "$*" >&2; logmsg "RESULT: failed"; exit 1; }
 
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOGDIR"/42sync_install-{apply,check,reinstall}-*.log 2>/dev/null) || true
+  keep=$(ls -1t "$LOG_PATH"/42sync_install-{apply,check,reinstall}-*.log 2>/dev/null) || true
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
 
-VERBS=(apply check reinstall)
+VERBS=(apply check reinstall configure-set configure-reset configure-show)
 
 print_verbs() {
   cat <<'EOF'
@@ -91,6 +105,11 @@ print_verbs() {
   apply       install or update whatever needs it
   check       dry run: show what would happen, change nothing
   reinstall   reinstall rclone even when the wanted version is already there
+
+  configure-set <name> <value>  set a per-machine override, e.g.:
+                                   ./42sync_install.sh configure-set bin-path /opt/mybin
+  configure-reset <name>         revert that override to its default
+  configure-show                 print the current effective value of every setting
 EOF
 }
 
@@ -106,6 +125,26 @@ if [[ "$MODE" == __complete ]]; then
   exit 0
 fi
 
+# A different kind of action entirely (editing a config file, not installing
+# anything) -- handled here and exited before any install-specific setup
+# (the per-run log file below, rclone/script installation) runs at all.
+case "$MODE" in
+  configure-set)
+    [[ $# -eq 3 ]] || die "Usage: ./42sync_install.sh configure-set <name> <value>"
+    configure_set "$2" "$3"
+    exit 0
+    ;;
+  configure-reset)
+    [[ $# -eq 2 ]] || die "Usage: ./42sync_install.sh configure-reset <name>"
+    configure_reset "$2"
+    exit 0
+    ;;
+  configure-show)
+    configure_show
+    exit 0
+    ;;
+esac
+
 DRY=0
 FORCE=0
 case "$MODE" in
@@ -115,9 +154,9 @@ case "$MODE" in
   *)         die "Unknown verb '$MODE'. Run './42sync_install.sh' with no arguments to see the list." ;;
 esac
 
-LOG="$LOGDIR/42sync_install-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+LOG="$LOG_PATH/42sync_install-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
 : > "$LOG"
-ln -sfn "$LOG" "$LOGDIR/42sync_install-$MODE-last.log"
+ln -sfn "$LOG" "$LOG_PATH/42sync_install-$MODE-last.log"
 
 TODO=()          # things left for the user, printed at the end
 note_todo() { TODO+=("$1"); }
@@ -208,7 +247,7 @@ unzip_archive() {  # zip destdir
   die "Need unzip (or, on Windows, PowerShell's Expand-Archive) to unpack rclone."
 }
 
-# Look in $BINDIR before consulting PATH: on a fresh machine ~/bin is not on PATH
+# Look in $BIN_PATH before consulting PATH: on a fresh machine ~/bin is not on PATH
 # yet (this script is what puts it there), so trusting `command -v` alone would
 # miss an rclone we installed a moment ago and re-download it on every run.
 # Sets RCLONE_PATH and RCLONE_VER. Deliberately not a value-returning function:
@@ -218,7 +257,7 @@ RCLONE_PATH=""
 RCLONE_VER=""
 detect_rclone() {
   RCLONE_PATH=""; RCLONE_VER=""
-  if   [[ -x "$BINDIR/rclone$EXE" ]]; then RCLONE_PATH="$BINDIR/rclone$EXE"
+  if   [[ -x "$BIN_PATH/rclone$EXE" ]]; then RCLONE_PATH="$BIN_PATH/rclone$EXE"
   elif have rclone;                   then RCLONE_PATH="$(command -v rclone)"
   else return 0
   fi
@@ -282,7 +321,7 @@ Refusing to install a binary that has not been verified.
   gpg missing        Most Linux and macOS installs have it. Campus machines give
                      you no admin rights, so if it is genuinely absent you cannot
                      simply install it — use a machine that has it, or opt out.
-  key file missing   Restore it:  git checkout scripts/rclone-release-key.asc
+  key file missing   Restore it:  git checkout rclone-release-key.asc
 
 To install anyway, accepting that only the SHA256 is checked — which catches a
 corrupted download but not a tampered mirror:
@@ -377,7 +416,7 @@ install_rclone() {
 
   if (( DRY )); then
     say "  would download $BASE_URL/v$want/rclone-v$want-$OS-$ARCH.zip and install it"
-    say "  to ${BINDIR/#$HOME/\~}/rclone$EXE after checking its SHA256"
+    say "  to ${BIN_PATH/#$HOME/\~}/rclone$EXE after checking its SHA256"
     if have gpg && [[ -f "$RCLONE_KEY_FILE" ]]; then
       say "  against a SHA256SUMS verified as signed by $RCLONE_KEY_FPR"
     elif [[ "${INSTALL_ALLOW_UNSIGNED:-0}" == "1" ]]; then
@@ -416,35 +455,82 @@ Nothing was installed. Delete any partial download and try again."
   [[ -f "$TMP/x/rclone-v$want-$OS-$ARCH/rclone$EXE" ]] \
     || die "Archive did not contain the expected rclone binary."
 
-  mkdir -p "$BINDIR"
+  mkdir -p "$BIN_PATH"
   # install_file replaces the file rather than writing through it, so this is
   # safe even if another shell is running the old binary right now.
-  install_file "$TMP/x/rclone-v$want-$OS-$ARCH/rclone$EXE" "$BINDIR/rclone$EXE"
-  green "installed  rclone v$want -> ${BINDIR/#$HOME/\~}/rclone$EXE"
+  install_file "$TMP/x/rclone-v$want-$OS-$ARCH/rclone$EXE" "$BIN_PATH/rclone$EXE"
+  green "installed  rclone v$want -> ${BIN_PATH/#$HOME/\~}/rclone$EXE"
 }
 
 # ----------------------------------------------------------------- scripts ---
 
+# Installs one file at a $BIN_PATH-relative subpath (e.g.
+# "42-internal/lib/42-common.sh", "42-internal/defaults/projects-filters.txt"),
+# creating whatever subdirectory it needs. Shared by install_scripts() below
+# for everything that isn't a flat top-level script -- the lib every script
+# sources, and the on-disk defaults auto-created files get copied from.
+install_aux_file() {  # rel-path (relative to both $REPO_BINDIR and $BIN_PATH)
+  local rel="$1" src="$REPO_BINDIR/$1" dst="$BIN_PATH/$1"
+  [[ -f "$src" ]] || die "Missing $src — run this from a clone of the repo."
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    green "ok         $rel already current in ${BIN_PATH/#$HOME/\~}"
+  elif (( DRY )); then
+    if [[ -f "$dst" ]]; then
+      yellow "would update  $rel in ${BIN_PATH/#$HOME/\~}"
+    else
+      yellow "would install $rel to ${BIN_PATH/#$HOME/\~}"
+    fi
+  else
+    mkdir -p "$(dirname "$dst")"
+    install_file "$src" "$dst"
+    green "installed  $rel -> ${BIN_PATH/#$HOME/\~}/$rel"
+  fi
+}
+
 install_scripts() {
   local name
-  for name in "${SCRIPTS[@]}"; do
-    [[ -f "$SCRIPTS_DIR/$name" ]] || die "Missing $SCRIPTS_DIR/$name — run this from a clone of the repo."
 
-    if [[ -f "$BINDIR/$name" ]] && cmp -s "$SCRIPTS_DIR/$name" "$BINDIR/$name"; then
-      green "ok         $name already current in ${BINDIR/#$HOME/\~}"
+  # Everything nested under bin/ (bin/42-internal/lib/, bin/42-internal/defaults/,
+  # bin/42-internal/win/, and whatever gets added later) is installed first, and
+  # separately from the flat SCRIPTS loop below, mirroring the repo's own
+  # layout under ~/bin rather than flattening everything. bin/'s only
+  # top-level members are the flat 42* commands (handled by the SCRIPTS loop)
+  # -- everything a command depends on but that isn't itself directly
+  # runnable lives one level down, under 42-internal/, distinguishing the two:
+  # 42-internal/lib/ is sourced rather than run directly (42-common.sh, every
+  # script's shared config; 42-configure.sh, the configure-set/-reset/-show
+  # implementation; 42-completions.bash, sourced by the user's own shell rc);
+  # 42-internal/defaults/ is on-disk default content scripts copy from
+  # (projects-filters.txt/projects-local.txt, READ-ME-FIRST.{txt,md},
+  # 42-common.local.sh -- see the longer comment in 42-common.sh);
+  # 42-internal/win/ is Windows-specific helper code that isn't plain data, so it
+  # doesn't belong in defaults/ either (see 42password). Walked by `find`
+  # rather than one hardcoded loop per name or nesting depth, so a new
+  # subdirectory -- at any depth -- needs no change here.
+  local aux rel
+  while IFS= read -r -d '' aux; do
+    rel="${aux#"$REPO_BINDIR"/}"
+    install_aux_file "$rel"
+  done < <(find "$REPO_BINDIR" -mindepth 2 -type f -print0)
+
+  for name in "${SCRIPTS[@]}"; do
+    [[ -f "$REPO_BINDIR/$name" ]] || die "Missing $REPO_BINDIR/$name — run this from a clone of the repo."
+
+    if [[ -f "$BIN_PATH/$name" ]] && cmp -s "$REPO_BINDIR/$name" "$BIN_PATH/$name"; then
+      green "ok         $name already current in ${BIN_PATH/#$HOME/\~}"
       continue
     fi
     if (( DRY )); then
-      if [[ -f "$BINDIR/$name" ]]; then
-        yellow "would update  $name in ${BINDIR/#$HOME/\~}"
+      if [[ -f "$BIN_PATH/$name" ]]; then
+        yellow "would update  $name in ${BIN_PATH/#$HOME/\~}"
       else
-        yellow "would install $name to ${BINDIR/#$HOME/\~}"
+        yellow "would install $name to ${BIN_PATH/#$HOME/\~}"
       fi
       continue
     fi
-    mkdir -p "$BINDIR"
-    install_file "$SCRIPTS_DIR/$name" "$BINDIR/$name"
-    green "installed  $name -> ${BINDIR/#$HOME/\~}/$name"
+    mkdir -p "$BIN_PATH"
+    install_file "$REPO_BINDIR/$name" "$BIN_PATH/$name"
+    green "installed  $name -> ${BIN_PATH/#$HOME/\~}/$name"
   done
 }
 
@@ -458,19 +544,27 @@ setup_shell() {
   case "$shellname" in
     zsh)  rc="$HOME/.zshrc" ;;
     bash) rc="$HOME/.bashrc" ;;
-    *)    yellow "skip       unknown shell '$shellname' — add $BINDIR to PATH yourself"
+    *)    yellow "skip       unknown shell '$shellname' — add $BIN_PATH to PATH yourself"
           return 0 ;;
   esac
   [[ -f "$rc" ]] || { (( DRY )) || : > "$rc"; }
 
-  ensure_line "$rc" 'export PATH="$HOME/bin:$PATH"' 'PATH entry for ~/bin'
+  # Write $HOME symbolically when BIN_PATH is still the plain default (portable
+  # across a future $HOME change, e.g. an account rename) -- but a BIN_PATH
+  # override only helps if the line landing in the user's shell rc points at
+  # that same real location, so fall back to the literal resolved value
+  # whenever it's been overridden to anything else. $PATH itself stays
+  # escaped either way, so it expands at shell-startup time, not now.
+  local bin_path_rc="$BIN_PATH"
+  [[ "$BIN_PATH" == "$HOME/bin" ]] && bin_path_rc='$HOME/bin'
+  ensure_line "$rc" "export PATH=\"$bin_path_rc:\$PATH\"" "PATH entry for ${BIN_PATH/#$HOME/\~}"
 
   # Tab-completion for every 42* script's verbs. bash only -- zsh has its own,
   # incompatible completion system (compdef/_arguments, not
   # complete/compgen/COMPREPLY), so this line would be silently inert there
   # even if added; skip it rather than write a line that does nothing.
   if [[ "$shellname" == bash ]]; then
-    ensure_line "$rc" 'source "$HOME/bin/42-completions.bash"' 'tab-completion for 42* scripts'
+    ensure_line "$rc" "source \"$bin_path_rc/42-internal/lib/42-completions.bash\"" 'tab-completion for 42* scripts'
   fi
 
   # zsh does not treat '#' as a comment interactively, so pasted commands with
@@ -480,8 +574,8 @@ setup_shell() {
   fi
 
   case ":$PATH:" in
-    *":$BINDIR:"*) ;;
-    *) note_todo "Open a new shell, or run: export PATH=\"\$HOME/bin:\$PATH\"" ;;
+    *":$BIN_PATH:"*) ;;
+    *) note_todo "Open a new shell, or run: export PATH=\"$BIN_PATH:\$PATH\"" ;;
   esac
 }
 
@@ -494,7 +588,7 @@ post_checks() {
   # XDG-style ~/.config/rclone/rclone.conf path: native Windows builds default
   # to %APPDATA%\rclone\rclone.conf instead, and hardcoding the Linux path
   # there means this check always reports "no config" even after one exists.
-  if [[ -x "$BINDIR/rclone$EXE" ]]; then rclone_bin="$BINDIR/rclone$EXE"
+  if [[ -x "$BIN_PATH/rclone$EXE" ]]; then rclone_bin="$BIN_PATH/rclone$EXE"
   elif have rclone;                   then rclone_bin="$(command -v rclone)"
   else rclone_bin=""
   fi
@@ -517,13 +611,13 @@ post_checks() {
     note_todo "Then encrypt it: rclone config -> s) Set configuration password"
   fi
 
-  if [[ ! -d "$HOME/Projects" ]]; then
-    note_todo "~/Projects is missing — if that is expected: 42sync seed"
-  elif [[ ! -f "$HOME/Projects/RCLONE_TEST" ]]; then
-    yellow "warn       ~/Projects exists but has no RCLONE_TEST marker"
-    note_todo "~/Projects has no access marker — read README, Safety mechanisms, before syncing"
+  if [[ ! -d "$LOCAL_PATH" ]]; then
+    note_todo "$LOCAL_PATH is missing — if that is expected: 42sync seed"
+  elif [[ ! -f "$LOCAL_PATH/RCLONE_TEST" ]]; then
+    yellow "warn       $LOCAL_PATH exists but has no RCLONE_TEST marker"
+    note_todo "$LOCAL_PATH has no access marker — read README, Safety mechanisms, before syncing"
   else
-    green "ok         ~/Projects present with its access marker"
+    green "ok         $LOCAL_PATH present with its access marker"
     note_todo "Create the shortcuts if you have not on this machine: 42links"
   fi
 }
@@ -531,13 +625,13 @@ post_checks() {
 # --------------------------------------------------------------------- main ---
 
 logmsg "=== 42sync_install.sh $(date '+%F %T') mode=$MODE host=$(uname -n) ==="
-logmsg "target=$OS-$ARCH bindir=$BINDIR src=$SRC"
+logmsg "target=$OS-$ARCH bindir=$BIN_PATH src=$SRC"
 
 if (( DRY )); then
   yellow "Dry run — nothing will be changed."
   echo
 fi
-say "Target: $OS-$ARCH, installing into ${BINDIR/#$HOME/\~}"
+say "Target: $OS-$ARCH, installing into ${BIN_PATH/#$HOME/\~}"
 echo
 
 install_rclone

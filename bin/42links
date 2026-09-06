@@ -13,8 +13,13 @@
 
 set -euo pipefail
 
-BASE="$HOME/Projects/42Prague"
-SYNC_ROOT="$HOME/Projects"
+# LOG_PATH, KEEP_LOGS, and LOCAL_PATH (aliased below as SYNC_ROOT, this script's
+# own established name for it) come from here -- shared with every other
+# 42* script.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
+
+SYNC_ROOT="$LOCAL_PATH"
+BASE="$SYNC_ROOT/42Prague"
 # Compared below against destinations resolved with `pwd -P`. Resolve this one too:
 # if any component of $HOME is itself a symlink, an unresolved value here would fail
 # to match and the guard would silently pass.
@@ -25,9 +30,6 @@ LINK_NAMES=(docs repos)
 
 # where to place them
 DIRS=("$HOME" "$HOME/Documents" "$HOME/Downloads")
-
-LOGDIR="$HOME/.local/state/42sync"
-KEEP_LOGS=20
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; logmsg "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; logmsg "$*"; }
@@ -92,16 +94,16 @@ for v in "${VERBS[@]}"; do [[ "$MODE" == "$v" ]] && valid=1 && break; done
 # Same directory and rotation policy as 42sync and 42sync_install.sh, so
 # there is one place to look. Prefixed with the script's own name so logs
 # stay identifiable even though "apply"/"check" are shared verb names with
-# other scripts in the same $LOGDIR.
-mkdir -p "$LOGDIR"
-LOG="$LOGDIR/42links-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
+# other scripts in the same $LOG_PATH.
+mkdir -p "$LOG_PATH"
+LOG="$LOG_PATH/42links-$MODE-$(date +%Y-%m-%d-%H%M%S).log"
 : > "$LOG"
-ln -sfn "$LOG" "$LOGDIR/42links-$MODE-last.log"
+ln -sfn "$LOG" "$LOG_PATH/42links-$MODE-last.log"
 logmsg "=== 42links $MODE $(date '+%F %T') host=$(uname -n) ==="
 
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOGDIR"/42links-{apply,check,clean-check,clean-apply,status}-*.log 2>/dev/null) || true
+  keep=$(ls -1t "$LOG_PATH"/42links-{apply,check,clean-check,clean-apply,status}-*.log 2>/dev/null) || true
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }

@@ -25,7 +25,7 @@ id_ed25519
 *.ppk
 
 # GPG private key material. Deliberately NOT a blanket *.asc rule:
-# scripts/rclone-release-key.asc is a PUBLIC key and is committed on purpose.
+# rclone-release-key.asc (repo root) is a PUBLIC key and is committed on purpose.
 .gnupg/
 secring.*
 *.gpg

@@ -7,7 +7,7 @@ really meant.
 
 ## I edited a script in this repo, but running it shows no change
 
-**Means:** you edited `scripts/42sync` (or `42links`/`42password`/
+**Means:** you edited `bin/42sync` (or `42links`/`42password`/
 `42projects`/`42logs`) in a clone of this repo, but the copy on your `PATH`
 resolves to the already-*installed* copy in `~/bin` — a separate file, not a
 symlink back to the repo. Editing the source doesn't touch what actually
@@ -37,7 +37,7 @@ ERROR : Bisync aborted. Must run --resync to recover.
 
 **Means:** bisync has no baseline for this exact path pair. Normal on a first run,
 and also after you rename either side — the cached listings in
-`~/.local/state/42sync/bisync/` are keyed to the literal paths.
+`~/.local/state/_projects-sync-rclone/bisync/` are keyed to the literal paths.
 
 **Fix:**
 
@@ -55,7 +55,7 @@ easy to drop a `--filter-from` your `projects-local.txt` needs, which silently
 re-syncs something you meant to keep off this machine.
 
 `--workdir` is what every mode passes so listings live in
-`~/.local/state/42sync/bisync/` rather than `~/.cache`, which these machines clear
+`~/.local/state/_projects-sync-rclone/bisync/` rather than `~/.cache`, which these machines clear
 between sessions. See "The baseline disappears between sessions" below.
 
 ---
@@ -79,7 +79,7 @@ If every directory carries a timestamp from just after your most recent login �
 nothing older — the whole cache is being wiped, not just rclone's part.
 
 **Fix:** already applied in `42sync`, which passes
-`--workdir ~/.local/state/42sync/bisync`. That location survives logout (verified by
+`--workdir ~/.local/state/_projects-sync-rclone/bisync`. That location survives logout (verified by
 logs written before a logout still being present after it).
 
 If you run `rclone bisync` by hand, pass the same `--workdir`, otherwise you are
@@ -103,7 +103,7 @@ its own log, so there is nothing to confuse.)
 listing files were actually rewritten —
 
 ```bash
-ls -la ~/.local/state/42sync/bisync/*.lst
+ls -la ~/.local/state/_projects-sync-rclone/bisync/*.lst
 ```
 
 (the plain `.path1.lst`/`.path2.lst` files, not the `-dry`/`-dry-new`/`-old`
@@ -212,7 +212,7 @@ does not exist yet. `42sync` creates it on first run; raw rclone does not.
 **Fix:**
 
 ```bash
-cat > ~/.config/rclone/projects-filters.txt <<'EOF'
+cat > ~/.config/_projects-sync-rclone/filters/projects-filters.txt <<'EOF'
 - .DS_Store
 - .Trash-*/**
 - **/*.o
@@ -256,8 +256,8 @@ to `orphans-apply` to skip the prompt).
 By hand, if you prefer:
 
 ```bash
-rclone ls     gdrive:_projects_rclone --include "**/*.out" --include "**/a.out"
-rclone delete gdrive:_projects_rclone --include "**/*.out" --include "**/a.out" --dry-run -v
+rclone ls     gdrive:_projects-sync-rclone --include "**/*.out" --include "**/a.out"
+rclone delete gdrive:_projects-sync-rclone --include "**/*.out" --include "**/a.out" --dry-run -v
 ```
 
 Note there is no `--filter-from` in those commands. Adding it would re-hide the very
@@ -265,7 +265,7 @@ files you are trying to reach — which is why these looked unreachable at first
 Deletions go to Drive's trash, so there is roughly a 30-day recovery window.
 
 **The empty directories left behind are a separate problem.** `rclone rmdirs
-gdrive:_projects_rclone --leave-root` clears the ones that become genuinely empty. Any
+gdrive:_projects-sync-rclone --leave-root` clears the ones that become genuinely empty. Any
 that still report `appNotAuthorizedToChild` never will, because that folder holds
 something rclone did not create. Those are web-UI only — and cosmetic, since an empty
 folder occupies no space.
@@ -502,7 +502,7 @@ copy instead of trying to reconstruct it locally — a Drive-synced
 copy pulled from wherever the repo is also cloned:
 
 ```bash
-rclone copyto "gdrive:_projects_rclone/<repo-path>/.git/index.conflict1" .git/index
+rclone copyto "gdrive:_projects-sync-rclone/<repo-path>/.git/index.conflict1" .git/index
 ```
 
 `index.conflict1` is generally the machine's own last-known-good index (per
@@ -514,7 +514,7 @@ as deleted-and-untracked.
 
 ---
 
-## `~/.config/rclone/projects-local.txt` loses its exclude rules — cause not yet known
+## `~/.config/_projects-sync-rclone/filters/projects-local.txt` loses its exclude rules — cause not yet known
 
 **Status: unresolved.** Documented so the symptom is recognized before it
 causes damage again, not because there's a fix yet.
@@ -530,7 +530,7 @@ what removed the guard that would have prevented that.
 
 **What's been ruled out:** nothing in `42sync`/`42projects` writes to this
 file except `42projects include`/`exclude` (neither was run in between). It
-lives under `~/.config`, entirely outside `$LOCAL`, so bisync itself cannot
+lives under `~/.config`, entirely outside `$LOCAL_PATH`, so bisync itself cannot
 touch it — this isn't a sync side-effect. No other process on this machine
 is known to touch it.
 
@@ -601,7 +601,7 @@ clone, not manual repair:
    them on both sides. `42sync orphans-apply` won't catch these (they're not
    artifact-filter excludes), so remove them directly:
    ```bash
-   rclone delete "gdrive:_projects_rclone/<repo-path>" --include "*.conflict*"
+   rclone delete "gdrive:_projects-sync-rclone/<repo-path>" --include "*.conflict*"
    ```
 8. **The bisync baseline is now stale relative to reality** (it still
    remembers the pre-recovery state) — expect `42sync check`/`apply` to trip
@@ -711,13 +711,13 @@ in that order, and only once you are certain local is the copy you want to keep:
 
 ```bash
 tmux new -s sync
-rclone sync ~/Projects gdrive:_projects_rclone \
-  --filter-from ~/.config/rclone/projects-filters.txt \
-  --links --verbose 2>&1 | tee ~/.local/state/42sync/mirror-$(date +%F-%H%M).log
+rclone sync ~/Projects gdrive:_projects-sync-rclone \
+  --filter-from ~/.config/_projects-sync-rclone/filters/projects-filters.txt \
+  --links --verbose 2>&1 | tee ~/.local/state/_projects-sync-rclone/logs/mirror-$(date +%F-%H%M).log
 
-rclone bisync ~/Projects gdrive:_projects_rclone \
-  --workdir ~/.local/state/42sync/bisync \
-  --filter-from ~/.config/rclone/projects-filters.txt \
+rclone bisync ~/Projects gdrive:_projects-sync-rclone \
+  --workdir ~/.local/state/_projects-sync-rclone/bisync \
+  --filter-from ~/.config/_projects-sync-rclone/filters/projects-filters.txt \
   --check-access --max-delete 25 --links --resync --verbose
 ```
 
@@ -750,11 +750,11 @@ gpg --verify SHA256SUMS
 ```
 
 A "Good signature" there but a failure in `42sync_install.sh` points at the bundled
-`scripts/rclone-release-key.asc`. A bad signature there too means the problem is
+`rclone-release-key.asc`. A bad signature there too means the problem is
 upstream or on your network, and installing rclone from that source is not safe.
 
 **Related:** `Bundled signing key is <X>, but this script pins <Y>` means
-`scripts/rclone-release-key.asc` is not the key the script expects — it was replaced,
+`rclone-release-key.asc` is not the key the script expects — it was replaced,
 corrupted, or the pin was edited. Restore it from git.
 
 ---
@@ -768,7 +768,7 @@ without it. Nothing was installed.
 machines do. If the key file is what is missing instead, restore it:
 
 ```bash
-git checkout scripts/rclone-release-key.asc
+git checkout rclone-release-key.asc
 ```
 
 If `gpg` is genuinely unavailable and you cannot install it (no admin rights on a campus

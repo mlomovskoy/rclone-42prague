@@ -1,6 +1,8 @@
 # 42-completions.bash — bash tab-completion for 42sync/42links/42password/
-# 42sync_install.sh/42projects. Sourced from ~/.bashrc by 42sync_install.sh,
-# right after the PATH line.
+# 42sync_install.sh/42projects. Lives in 42-internal/lib/, not installed as a
+# top-level command, because it's meant to be sourced (by the user's own
+# shell rc), never executed directly -- same category as 42-common.sh.
+# Sourced from ~/.bashrc by 42sync_install.sh, right after the PATH line.
 #
 # zsh is NOT covered -- it has its own, incompatible completion system
 # (compdef/_arguments, not complete/compgen/COMPREPLY). A zsh equivalent

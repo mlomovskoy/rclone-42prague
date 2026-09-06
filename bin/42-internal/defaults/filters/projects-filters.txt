@@ -1,0 +1,247 @@
+# Excluded from sync. Lines starting with "- " are excludes.
+# .git is deliberately NOT excluded — repos sync whole.
+#
+# IMPORTANT: never prefix a pattern here with "**/" to mean "at any depth
+# including the root" -- in rclone's filter syntax, "**/" requires at least
+# one real directory component before it, so "**/*.o" silently misses a .o
+# file sitting at a project's own top level (only catches it nested under a
+# subdirectory). A bare pattern like "*.o" already matches at every depth,
+# root included -- that's what every rule below uses. Found the hard way:
+# **/*.o and **/.cache/** had this exact gap since this filter file was
+# first created, on every machine, the whole time -- confirmed with a
+# scratch fixture that only the bare form catches a root-level match. Use
+# /pattern (leading slash) only when you deliberately want root-ONLY, never
+# root-plus-deeper.
+- .DS_Store
+- .Trash-*/**
+- *.o
+- *.out
+- a.out
+- .cache/**
+# .claude/ itself is NOT excluded -- Claude Code's own runtime/session state
+# lives entirely outside ~/Projects (in the user's home directory), not in
+# a project-level folder, and no such top-level folder has ever actually
+# existed in practice. An earlier version of this rule excluded
+# ".claude/**" (later anchored to "/.claude/**") on that mistaken premise,
+# and it silently blocked a project's own git-tracked, secret-free
+# .claude/settings.json (e.g. a shared permission allowlist) from ever
+# syncing -- on any machine that received the repo via bisync rather than a
+# real git clone, that file would then look permanently "deleted" to git,
+# since the working tree copy could never materialize. See TROUBLESHOOTING.md.
+# settings.local.json is the one real exception: Claude Code's own
+# per-machine-override convention (confirmed by its actual content to carry
+# a hardcoded absolute path from a specific past session) -- excluded at
+# every level (bare pattern, not anchored), whichever project it's in.
+- .claude/settings.local.json
+# workspace.json (and its mobile counterpart) hold pure per-device UI state
+# for an Obsidian vault -- which panes are open, window layout, cursor
+# position -- not vault content. Obsidian's own community convention is to
+# exclude these from sync/version control for exactly the reason
+# settings.local.json needed excluding above: noise that causes needless
+# churn on another machine, never something worth inheriting. Every other
+# file under .obsidian/ (plugins, appearance, daily-notes config, etc.) is
+# genuinely shared vault configuration and keeps syncing.
+- .obsidian/workspace.json
+- .obsidian/workspace-mobile.json
+#
+# =====================================================================
+# TEMPLATE REFERENCE -- dotfiles/dotfolders other tools may create inside
+# a project, and how to handle each. This is a reference, not a live
+# ruleset: every line below is commented out (harmless if left that way)
+# except the .claude/ and .obsidian/ rules above, which are active because
+# their content was actually inspected in a real project first.
+#
+# THE RULE FOR ADDING TO THIS LIST: don't blanket-exclude OR
+# blanket-include on a guess. The .claude/** saga above is the cautionary
+# tale in both directions -- an assumption about "runtime lock state" that
+# was never actually true silently blocked a real, wanted file from ever
+# syncing, for as long as this tool existed, before anyone looked inside
+# the folder. The entries below are backed by actual research (each tool's
+# own docs/repo, checked September 2026), not guesses -- but tool
+# conventions change across versions, so before uncommenting anything for
+# real:
+#   1. Read what's actually inside the folder in a real project -- don't
+#      trust this list blindly forever; re-check if it's been a while.
+#   2. Decide file-by-file: curated, shareable, secret-free project policy
+#      -> sync it (and it belongs git-tracked too, if it isn't already).
+#      Per-machine/session-accumulated state -- a hardcoded absolute path,
+#      an auth token, UI layout, anything the tool itself calls
+#      "local"/"session"/"cache"/"history" -> exclude it here, AND make
+#      sure the project's own .gitignore excludes it too if it's ever at
+#      risk of being committed by accident (this tool and git should
+#      agree, not leave one silently disagreeing with the other).
+#   3. Uncomment (or add) a precise rule for exactly what was found, and
+#      say what you checked in the comment -- not a guess for a whole
+#      folder based on its name alone.
+#
+# --- AGENTS.md -- the cross-tool standard, not one tool's file -----------
+#   sync:    AGENTS.md (any depth -- agents read the nearest one to where
+#            they're working, so a subproject can have its own). Plain
+#            Markdown, no personal-state variant exists by design: it's a
+#            README written FOR agents, meant to be committed. Originated
+#            from OpenAI Codex, Amp, Google Jules, Cursor, and Factory
+#            converging on one shared filename; now stewarded by the
+#            Agentic AI Foundation (Linux Foundation). Several tools below
+#            (Cline, Antigravity) read it directly in addition to their
+#            own native file.
+#
+# --- Claude Code -- .claude/ (ACTIVE, see above) ------------------------
+#   sync:    .claude/settings.json, .claude/commands/**, .claude/agents/**
+#            -- curated, team-shared policy and custom tooling.
+#   exclude: .claude/settings.local.json (already active above).
+#
+# --- Gemini CLI -- GEMINI.md, .gemini/ ------------------------------------
+#   sync:    GEMINI.md -- project-root context/instructions; Google's own
+#            docs recommend committing it so the whole team shares one
+#            config. .gemini/settings.json -- project settings, overrides
+#            user-level settings; sync if curated as team policy.
+#   exclude: no personal-state file confirmed here yet. SPECULATIVE example
+#            only (guessed from Claude Code's own naming convention, NOT
+#            independently confirmed for Gemini CLI -- verify before use):
+# # - .gemini/settings.local.json
+#
+# --- Antigravity -- .agents/rules/, GEMINI.md, AGENTS.md ------------------
+#   sync:    <project>/.agents/rules/** -- project-specific rules (Markdown,
+#            12,000-char cap per file); the legacy singular ".agent/rules"
+#            still works for older projects. Since v1.20.3 (Mar 2026)
+#            Antigravity also reads AGENTS.md directly. Its GLOBAL rules
+#            file (~/.gemini/GEMINI.md, applying to every project) lives
+#            outside ~/Projects entirely, same as other tools' global config.
+#   exclude: no project-level personal-state file confirmed yet. SPECULATIVE
+#            example only (guessed shape, NOT confirmed -- this is a newer,
+#            still-evolving product, verify before use):
+# # - .agents/rules/*.local.*
+#
+# --- Cursor -- .cursor/, .cursorrules -----------------------------------
+#   sync:    .cursor/rules/**, .cursorrules -- project rules, meant to be
+#            shared team policy (same role as CLAUDE.md/AGENTS.md). (The
+#            separate Cursor CLI's own cli-config.json is global/per-user,
+#            outside any project folder -- not relevant here.)
+#   exclude: no personal-state file confirmed here yet -- Cursor's own
+#            community forum shows project-level overrides are still a
+#            requested, not-yet-fully-built feature as of this research.
+#            SPECULATIVE example only (guessed shape, NOT confirmed):
+# # - .cursor/*.local.*
+#
+# --- Windsurf -- .windsurf/ ----------------------------------------------
+#   sync:    .windsurf/rules/** -- project rules, same role as above.
+#   exclude: no personal-state file confirmed here yet. SPECULATIVE example
+#            only (guessed shape, NOT confirmed -- verify before use):
+# # - .windsurf/*.local.*
+#
+# --- Cline -- .clinerules, .clinerules/, .clineignore ---------------------
+#   sync:    .clinerules (file) or .clinerules/ (folder of .md/.txt files,
+#            current standard, each with its own path scoping via YAML
+#            frontmatter) -- project rules. .clineignore -- a .gitignore-
+#            style allowlist of what Cline may access; shared safety
+#            policy, not personal. Cline also reads AGENTS.md, .cursorrules,
+#            and .windsurfrules directly, so a project using one of those
+#            already covers Cline too.
+#   exclude: no personal-state file confirmed here yet. SPECULATIVE example
+#            only (guessed shape, NOT confirmed -- verify before use):
+# # - .clinerules/*.local.*
+#
+# --- Roo Code -- .roo/, .roorules, .rooignore -----------------------------
+#   sync:    .roo/rules/** (or .roorules file, used only if the folder is
+#            absent/empty), .roo/rules-<mode>/** (or .roorules-<mode>) for
+#            mode-specific rules -- all project policy. .rooignore -- a
+#            .gitignore-style allowlist of what Roo may access, shared
+#            safety policy.
+#   exclude: .roo/mcp.json is CONFIRMED real (Roo Code's own docs) and IS
+#            meant to be shareable/committed by design -- but it's also
+#            where project MCP server credentials/API keys get configured,
+#            per the same docs. Not excluded by default here, since many
+#            teams genuinely want it synced -- but audit its actual content
+#            before syncing, same care as .env, rather than assuming it's
+#            secret-free just because the rest of .roo/ is. If you decide
+#            your project's copy does hold real credentials:
+# # - .roo/mcp.json
+#
+# --- Zed -- .zed/settings.json --------------------------------------------
+#   sync:    .zed/settings.json -- project settings (formatter, tab_size,
+#            language tooling); Zed's own docs describe this as meant to
+#            live in the project, merged with the user's global config.
+#            Scoped to editor/tooling behavior only, not personal secrets.
+#            Note on terminology: Zed's UI calls this "local settings" --
+#            but "local" there means "local to this project" (vs. global
+#            user settings), not "personal, don't share." It's the thing
+#            meant to be committed, not excluded.
+#   exclude: no personal-state file confirmed at all for Zed, in either
+#            sense of "local" -- nothing to add here, speculative or not.
+#
+# --- JetBrains Junie -- .junie/guidelines.md or .junie/AGENTS.md ----------
+#   sync:    .junie/guidelines.md (legacy, still supported), the newer
+#            .junie/AGENTS.md, or .junie/playbook.md / .junie/rules/** --
+#            team coding-standards guidelines, meant to be committed.
+#            (Separate from the .idea/ JetBrains-IDE entry below -- Junie
+#            is their autonomous agent, not the IDE itself.)
+#   exclude: .junie/memory/** is CONFIRMED real and CONFIRMED personal --
+#            JetBrains' own issue tracker has an open request to add
+#            "**/.junie/memory/" to .gitignore, explicitly because it's
+#            local-development-only state with no reason to be in the repo:
+# # - .junie/memory/**
+#
+# --- GitHub Copilot -- .github/copilot-instructions.md -------------------
+#   sync:    .github/copilot-instructions.md -- shared project instructions,
+#            meant to be committed. No project-level personal-state folder
+#            is known for Copilot itself; its own config lives in the
+#            IDE's global settings, outside any project folder.
+#
+# --- Aider -- .aider.conf.yml, .aider.* ----------------------------------
+#   sync:    .aider.conf.yml -- project-level config, if curated as policy.
+#   exclude: .aider.chat.history.md, .aider.input.history -- per-session
+#            chat transcript and command history. Confirmed via Aider's
+#            own docs: these can contain real secrets that appeared in
+#            terminal output during a session, not just routine chat noise
+#            -- Aider itself ships a default gitignore entry for exactly
+#            this reason. (Aider's own recommended pattern is the broader
+#            ".aider*", but that would also catch .aider.conf.yml above,
+#            which is usually fine to share -- naming the specific history
+#            files keeps that distinction instead of losing it.)
+# # - .aider.chat.history.md
+# # - .aider.input.history
+#
+# --- Continue (Continue.dev) -- .continue/ -------------------------------
+#   Most of Continue's config is GLOBAL (~/.continue/config.yaml or
+#   config.ts), outside ~/Projects entirely, same as Claude Code's.
+#   sync:    .continue/rules/** -- project-level rules, auto-active for
+#            that workspace.
+#   exclude: .continue/sessions/** -- per-session chat history (confirmed:
+#            individual JSON files per session).
+# # - .continue/sessions/**
+#
+# --- VS Code -- .vscode/ --------------------------------------------------
+#   sync:    .vscode/settings.json, extensions.json, launch.json,
+#            tasks.json -- shared formatter/linter config, recommended
+#            extensions, debug/build configs. VS Code keeps genuinely
+#            personal preferences in its own global user settings, not
+#            in-repo, so there's no strong "local override" file to
+#            exclude here by default -- if one ever appears, inspect it.
+#
+# --- JetBrains IDEs (IntelliJ, PyCharm, WebStorm, CLion, ...) -- .idea/ ---
+#   sync:    .idea/codeStyles/**, .idea/runConfigurations/** -- if the team
+#            curates shared code style and run configs.
+#   exclude: .idea/workspace.xml, .idea/tasks.xml,
+#            .idea/usage.statistics.xml, .idea/shelf/** -- per-device
+#            window/editor layout and personal shelved changes. This is
+#            JetBrains' own documented recommendation, not a guess.
+# # - .idea/workspace.xml
+# # - .idea/tasks.xml
+# # - .idea/usage.statistics.xml
+# # - .idea/shelf/**
+#
+# --- Obsidian -- .obsidian/ (ACTIVE, see above) ---------------------------
+#   sync:    everything except workspace.json/workspace-mobile.json.
+#   exclude: workspace.json, workspace-mobile.json (already active above).
+# =====================================================================
+#
+# .env files are the single most likely place for real secrets, and unlike
+# the rules above this isn't about machine-locality -- it's about not
+# fanning credentials out across every machine this syncs to, tracked in git
+# or not (this tool doesn't check). .env.example is the one deliberate
+# exception: by convention it's a template meant to be shared, holding no
+# real secrets -- the include must come before the excludes below, since
+# rclone filters take the first matching rule.
++ .env.example
+- .env
+- .env.*

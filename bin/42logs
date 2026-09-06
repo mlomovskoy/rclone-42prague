@@ -7,6 +7,7 @@
 
 set -uo pipefail
 
-LOGDIR="$HOME/.local/state/42sync"
+# LOG_PATH comes from here -- shared with every other 42* script.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
 
-ls -1t "$LOGDIR"/*.log 2>/dev/null | grep -v -- '-last\.log$' || echo "(no logs yet)"
+ls -1t "$LOG_PATH"/*.log 2>/dev/null | grep -v -- '-last\.log$' || echo "(no logs yet)"

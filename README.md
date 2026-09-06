@@ -4,7 +4,7 @@ Two-way sync between a 42 Prague campus machine and Google Drive, using
 [rclone bisync](https://rclone.org/bisync/) and a personal Google OAuth client.
 
 ```
-~/Projects            <-->   gdrive:_projects_rclone
+~/Projects            <-->   gdrive:_projects-sync-rclone
   42Prague/                    42Prague/
     docs/                        docs/
     repos/                       repos/
@@ -53,16 +53,45 @@ Three habits still matter:
 README.md                    this file
 TROUBLESHOOTING.md           every error hit during setup, and the fix
 42sync_install.sh            installs everything below, plus rclone itself
-                              (at the repo root, not scripts/, so it's the
-                              first thing visible from a fresh clone)
-scripts/rclone-release-key.asc  rclone's release signing key, used by 42sync_install.sh
-scripts/42sync               the sync wrapper (install to ~/bin)
-scripts/42projects           choose which projects sync to THIS machine (install to ~/bin)
-scripts/42links              docs/ and repos/ shortcuts into ~ (install to ~/bin)
-scripts/42password           store the config password so it stops prompting (install to ~/bin)
-scripts/42logs               list logs written by every 42* script (install to ~/bin)
-scripts/42-completions.bash  bash tab-completion for every 42* script's verbs (install to ~/bin)
-templates/READ-ME-FIRST.txt  warning file that should be placed in ~/Projects
+                              (at the repo root, not bin/, so it's the
+                              first thing visible from a fresh clone). Also
+                              has configure-set/-reset/-show verbs, for
+                              setting per-machine overrides before ever
+                              installing anything -- see Configuration,
+                              Reconfiguring a single machine
+rclone-release-key.asc       rclone's release signing key -- read directly by
+                              42sync_install.sh during its own rclone-download
+                              check, never copied into ~/bin, so it stays at
+                              the repo root next to the script that uses it
+bin/                          deliberately laid out as a mirror of the installed
+                              ~/bin -- everything here lands under ~/bin at the
+                              same relative path. Only the flat 42* commands
+                              sit at this top level; everything they depend
+                              on but that isn't itself directly runnable
+                              lives one level down, under 42-internal/
+bin/42sync                    the sync wrapper (install to ~/bin)
+bin/42projects                choose which projects sync to THIS machine (install to ~/bin)
+bin/42links                   docs/ and repos/ shortcuts into ~ (install to ~/bin)
+bin/42password                store the config password so it stops prompting (install to ~/bin)
+bin/42logs                    list logs written by every 42* script (install to ~/bin)
+bin/42-internal/lib/          shared config, the configure-set/-reset/-show
+                              implementation, and bash tab-completion every
+                              script sources, never run directly (install
+                              to ~/bin/42-internal/lib)
+bin/42-internal/defaults/     default content scripts copy into place on
+                              first run: the filter file defaults,
+                              READ-ME-FIRST.txt/.md (42sync seed/resync-apply
+                              drop both into ~/Projects if they aren't there
+                              yet -- one plain-text, one Markdown, so it
+                              reads cleanly wherever it's opened from), and
+                              42-common.local.sh (a commented-out template
+                              for per-machine overrides -- see
+                              Configuration, Reconfiguring a single
+                              machine) (install to ~/bin/42-internal/defaults)
+bin/42-internal/win/          Windows-specific helper code that isn't plain
+                              data (the DPAPI password helper 42password
+                              copies from -- see README, Known limitations)
+                              (install to ~/bin/42-internal/win)
 docs/                        GitHub Pages site (home / privacy / terms)
 ```
 
@@ -83,16 +112,60 @@ of service URL on a real domain before an OAuth app can be published out of "Tes
 | Authorized domain | `<your-github-username>.github.io` |
 | rclone remote | `gdrive` |
 | Local path | `~/Projects` |
-| Remote path | `gdrive:_projects_rclone` |
-| bisync workdir | `~/.local/state/42sync/bisync` (**not** the default `~/.cache/...`) |
-| Logs | `~/.local/state/42sync/<script>-<verb>-<timestamp>.log`, newest per (script, verb) as `<script>-<verb>-last.log` |
-| Filters | `~/.config/rclone/projects-filters.txt` |
+| Remote path | `gdrive:_projects-sync-rclone` |
+| bisync workdir | `~/.local/state/_projects-sync-rclone/bisync` (**not** the default `~/.cache/...`) |
+| Logs | `~/.local/state/_projects-sync-rclone/logs/<script>-<verb>-<timestamp>.log`, newest per (script, verb) as `<script>-<verb>-last.log` |
+| Filters | `~/.config/_projects-sync-rclone/filters/projects-filters.txt` |
+
+### Reconfiguring a single machine
+
+Every value in the table above is a default set once, for every machine, in
+`bin/42-internal/lib/42-common.sh` — editing that file means editing the repo and
+reinstalling, which changes it everywhere.
+
+To change one on just this machine instead — without a future
+`./42sync_install.sh apply` (run to pick up tool updates) ever reverting it —
+use the `configure-set`/`configure-reset`/`configure-show` verbs, on
+whichever of these two you have to hand:
+
+```bash
+# Before ever installing anything, from a clone of this repo:
+./42sync_install.sh configure-set local-path /mnt/data/Projects
+./42sync_install.sh configure-set keep-logs 50
+
+# After installing, from anywhere -- no repo clone needed:
+42sync configure-show      # print every setting's current effective value
+42sync configure-reset local-path
+```
+
+`./42sync_install.sh`'s configure-* verbs work *before* ever installing
+anything, not just after: run one first (e.g. `configure-set bin-path ...` to
+install somewhere other than `~/bin`), and its very own first `apply` already
+honors it.
+
+Under the hood both just edit `~/.config/_projects-sync-rclone/42-common.local.sh`
+— created once, commented out, the first time any `42*` script or the
+installer runs. Editing that file by hand works exactly as well; these verbs
+only save you finding the right line:
+
+```bash
+# ~/.config/_projects-sync-rclone/42-common.local.sh
+LOCAL_PATH="/mnt/data/Projects"
+KEEP_LOGS=50
+```
+
+It's sourced after every default above is set, so a plain reassignment is
+enough to override it, and it's never version-controlled or touched again by
+the installer once it exists.
 
 ### Windows: `~/Projects` living somewhere else
 
-`$LOCAL` is hardcoded to `$HOME/Projects` (`C:\Users\<you>\Projects`) throughout
-these scripts. If your real projects folder lives elsewhere (a different drive,
-say), point `~/Projects` at it with an NTFS **junction**, not a symlink:
+Setting `LOCAL_PATH` as above works on Windows too, but for that specific case a
+junction is usually the better fix — it also makes File Explorer and every
+other Windows tool see `~/Projects` at the real location, not just this
+toolkit's own scripts. If your real projects folder lives elsewhere (a
+different drive, say), point `~/Projects` at it with an NTFS **junction**,
+not a symlink:
 
 ```powershell
 New-Item -ItemType Junction -Path "C:\Users\<you>\Projects" -Target "D:\Projects"
@@ -202,7 +275,7 @@ from minutes after login, with nothing older surviving.
 
 The effect was a forced `--resync` at the start of every session, which defeats the
 point of two-way sync. `42sync` therefore passes `--workdir` and keeps listings in
-`~/.local/state/42sync/bisync`, which does persist across logouts.
+`~/.local/state/_projects-sync-rclone/bisync`, which does persist across logouts.
 
 If you ever run `rclone bisync` by hand, pass `--workdir` too, or you will be
 operating on a different (empty) baseline than the script.
@@ -226,6 +299,9 @@ campus (your own laptop).
 # 1. Install rclone and every 42* script into ~/bin -- no root required
 git clone https://github.com/<your-github-username>/rclone-42prague.git
 cd rclone-42prague
+# optional: ./42sync_install.sh configure-set bindir ... to install somewhere
+# other than ~/bin, or any other override -- see Configuration, Reconfiguring
+# a single machine. Skip this if the defaults are fine.
 ./42sync_install.sh apply
 exec zsh                      # pick up the new PATH (bash: pick up tab-completion too)
 
@@ -265,7 +341,7 @@ Re-run it any time to update the tools. It is idempotent: it only touches what h
 actually changed, and `42sync_install.sh check` shows what it would do without doing
 it. Run `./42sync_install.sh` with no arguments any time to see every verb it accepts.
 
-Every run writes `~/.local/state/42sync/42sync_install-<mode>-<timestamp>.log` (see
+Every run writes `~/.local/state/_projects-sync-rclone/logs/42sync_install-<mode>-<timestamp>.log` (see
 *Logs* under Daily use). It keeps what the terminal does not: the exact URLs fetched,
 `curl`'s own error text (it runs silent), the full gpg output, and — when a signature
 or checksum check fails — the `SHA256SUMS` as received. That evidence would otherwise
@@ -394,7 +470,7 @@ instead, and prints the exact command.
 `diff` is read-only and ignores the exclusion, so it works on a folder you are not
 currently syncing.
 
-The selection lives in `~/.config/rclone/projects-local.txt`, which is **per-machine and
+The selection lives in `~/.config/_projects-sync-rclone/filters/projects-local.txt`, which is **per-machine and
 never synced** — that is the whole point. It is deliberately a different file from the
 artifact filters below, because `42sync orphans-check`/`orphans-apply` treat everything
 the artifact filters exclude as junk on Drive and offer to delete it. A project you are
@@ -428,7 +504,7 @@ The one case that does need drive.google.com is a purge failing with
 `appNotAuthorizedToChild` — that folder holds something rclone did not create, and under
 the `drive.file` scope no rclone command can remove it.
 
-Filters: `~/.config/rclone/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
+Filters: `~/.config/_projects-sync-rclone/filters/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
 caches, Claude Code's `.claude/` runtime state — shared intent on every machine,
 created on first run, yours to edit)
 
@@ -441,10 +517,10 @@ no-argument call, `42logs` itself), which write nothing: listing things would le
 trail of entries that record nothing but having looked.
 
 ```
-Log: /home/<login>/.local/state/42sync/42sync-verify-2026-08-31-142752.log
+Log: /home/<login>/.local/state/_projects-sync-rclone/logs/42sync-verify-2026-08-31-142752.log
 ```
 
-Every script writes to `~/.local/state/42sync/`, so there is one place to look. Logs
+Every script writes to `~/.local/state/_projects-sync-rclone/logs/`, so there is one place to look. Logs
 are named `<script>-<verb>-<timestamp>.log` — the script name stays in the filename
 even though the verb you type is often short (`apply`, `check`) and shared across
 scripts, so files from different scripts in the same directory never collide:
@@ -574,7 +650,7 @@ protecting — more than the client secret, which alone cannot reach your data.
 what it got before trusting it:
 
 1. Downloads the versioned zip and its `SHA256SUMS`, which rclone publishes PGP-clearsigned.
-2. Imports `scripts/rclone-release-key.asc` into a **throwaway keyring** — never your
+2. Imports `rclone-release-key.asc` into a **throwaway keyring** — never your
    `~/.gnupg` — and refuses to continue unless that key's fingerprint is exactly:
 
    ```
