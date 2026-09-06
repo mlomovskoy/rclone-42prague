@@ -7,6 +7,17 @@
 
 set -uo pipefail
 
+# Hidden, not for humans -- bash tab-completion calls this (see
+# 42-completions.bash). No verbs to offer, so this prints nothing: an empty
+# candidate list still suppresses bash's default fallback (filename
+# completion against the current directory, which is what pressing TAB
+# after "42logs " did before this script was registered for completion at
+# all). Exits before sourcing 42-common.sh below -- no side effects for a
+# purely informational, argument-less TAB press.
+if [[ "${1:-}" == __complete ]]; then
+  exit 0
+fi
+
 # LOG_PATH comes from here -- shared with every other 42* script.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
 

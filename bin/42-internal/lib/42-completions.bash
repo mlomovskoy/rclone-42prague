@@ -1,5 +1,5 @@
 # 42-completions.bash — bash tab-completion for 42sync/42links/42password/
-# 42sync_install.sh/42projects. Lives in 42-internal/lib/, not installed as a
+# 42sync_install.sh/42projects/42logs. Lives in 42-internal/lib/, not installed as a
 # top-level command, because it's meant to be sourced (by the user's own
 # shell rc), never executed directly -- same category as 42-common.sh.
 # Sourced from ~/.bashrc by 42sync_install.sh, right after the PATH line.
@@ -15,11 +15,15 @@
 
 _42_verb_complete() {
   # Only the verb (first argument) is completed -- these scripts don't need
-  # ID/folder-argument completion today.
+  # ID/folder-argument completion today. 42logs has no verbs at all, so its
+  # own __complete prints nothing -- an empty candidate list here, not
+  # bash's default fallback of completing against filenames in the current
+  # directory, which is what pressing TAB after "42logs " did before it was
+  # registered below.
   (( COMP_CWORD == 1 )) || return 0
   local verbs
   verbs="$("${COMP_WORDS[0]}" __complete 2>/dev/null)"
   COMPREPLY=($(compgen -W "$verbs" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
 
-complete -F _42_verb_complete 42sync 42links 42password 42sync_install.sh 42projects
+complete -F _42_verb_complete 42sync 42links 42password 42sync_install.sh 42projects 42logs
