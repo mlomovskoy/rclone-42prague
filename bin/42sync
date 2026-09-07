@@ -17,6 +17,7 @@ VERBS=(
   verify
   force-check force-apply
   orphans-check orphans-apply
+  onboard-check onboard-apply
   resync-check resync-apply
   seed status
   configure-set configure-reset configure-show
@@ -43,6 +44,9 @@ print_verbs() {
 
   orphans-check          list excluded files stranded on Drive; deletes nothing
   orphans-apply [DELETE] delete them for real
+
+  onboard-check           preview which repos need a GitHub repo of their own (ADR-0003)
+  onboard-apply [ONBOARD] create them for real: new private repo, remote, one push, marker
 
   resync-check           preview the first sync when both sides already have content
   resync-apply [RESYNC]  apply it for real
@@ -94,6 +98,11 @@ source "$LIBDIR/42-common.sh"
 # configure_set/configure_reset/configure_show -- the configure-* verbs below
 # just call these. See that file for what they touch and why.
 source "$LIBDIR/42-configure.sh"
+
+# classify_remotes()/github_owner() -- onboard-check/onboard-apply below use
+# these to decide which repos need a GitHub repo of their own (ADR-0003) and
+# to name it (ADR-0002's ownership check). No other verb uses this file yet.
+source "$LIBDIR/42-remote-classify.sh"
 
 # Computes RCLONE_PASSWORD_COMMAND fresh, from the CURRENT $CONFIG_PATH, and
 # exports it here -- rather than every rclone call below trusting whatever
@@ -172,7 +181,7 @@ trap on_exit EXIT
 # force-check and force-apply logs can never double-match each other's glob.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -253,6 +262,92 @@ compute_skip_args() {
   for rel in "${DIRTY_REPOS[@]}"; do
     SKIP_ARGS+=(--exclude "/$rel/**")
   done
+}
+
+# ADR-0003: which repos need a GitHub repo of their own. Walks the same way
+# check_repos() does (same -H reasoning: a junction/symlink LOCAL_PATH root
+# needs following, deeper ones don't). Fills ONBOARD_CANDIDATES (repo paths
+# relative to $LOCAL_PATH that have >=1 remote already, but none owned by
+# the user on github.com -- ADR-0003's own condition, reusing
+# classify_remotes() from ADR-0002 rather than re-deriving it) and
+# ONBOARD_SKIPPED_BROKEN (a `.git` that exists but isn't a valid repo --
+# real example found auditing ADR-0002, see
+# design/adr/0002-remote-classification.md's Consequences; skipped rather
+# than crashing on it).
+#
+# Deliberately does NOT cross-reference $PROJECT_FILTERS to skip
+# already-excluded projects -- the exact same known, accepted gap
+# check_repos() already has (design/open-questions.md #13), inherited here
+# rather than fixed as a side effect of an unrelated ADR.
+ONBOARD_CANDIDATES=()
+ONBOARD_SKIPPED_BROKEN=()
+scan_onboard_candidates() {
+  ONBOARD_CANDIDATES=(); ONBOARD_SKIPPED_BROKEN=()
+  local repo rel
+  while IFS= read -r -d '' gitdir; do
+    repo="$(dirname "$gitdir")"
+    rel="${repo#$LOCAL_PATH/}"
+    if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+      ONBOARD_SKIPPED_BROKEN+=("$rel")
+      continue
+    fi
+    classify_remotes "$repo"
+    (( ${#REMOTE_NAMES[@]} == 0 )) && continue  # Scenario A: no remotes, left alone
+    (( ${#REMOTE_PUSH[@]} > 0 )) && continue    # already has an owned github.com remote
+    ONBOARD_CANDIDATES+=("$rel")
+  done < <(find -H "$LOCAL_PATH" -type d -name .git -print0 2>/dev/null)
+}
+
+# Path-derived repo name for `gh repo create`, joining every relative path
+# segment from $LOCAL_PATH -- design/open-questions.md #5's collision-
+# resistant option, chosen deliberately over the shorter "immediate parent +
+# basename" alternative: 42's Piscine exercises reuse names like "ex00"
+# across different cohorts, a real collision already visible in this
+# machine's own 42Prague/repos/ layout. Not PROVABLY collision-free -- "-"
+# is both the segment separator and a character GitHub allows within a
+# segment, so two sufficiently contrived distinct paths could still collapse
+# to the same name -- but collision-resistant in every real case checked,
+# and `gh repo create` failing on a genuine name clash already fails loudly
+# and skips just that repo rather than corrupting anything (open questions
+# #5's own accepted fallback).
+repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloaded
+  local rel="$1" name
+  name="${rel//\//-}"
+  # GitHub repo names allow only [A-Za-z0-9._-]; replace anything else with
+  # "-" rather than reject the whole name over one unexpected character.
+  name="${name//[^A-Za-z0-9._-]/-}"
+  # Collapse runs of "-" left by the substitutions above -- this machine's
+  # own folder names (e.g. "-1_PiscineReloaded", "-2_PiscineMay26") start
+  # with "-" themselves, which doubles up right at the path-join point.
+  # Trades a little collision-resistance for a much more readable name (see
+  # the function-level note above); a real clash still fails safely.
+  while [[ "$name" == *--* ]]; do name="${name//--/-}"; done
+  name="${name#-}"; name="${name%-}"
+  printf '%s\n' "${name:0:100}"  # GitHub's own repo-name length limit
+}
+
+# ADR-0001's marker: a plain-text, regenerable record of every remote a repo
+# has, so a machine that receives this repo's working-tree files via Drive
+# with no local .git of its own could reconstitute one via `git clone`
+# instead of ending up with an orphaned pile of files. ADR-0001 itself
+# (stop mirroring .git/, consume this marker on the receiving end) is not
+# implemented yet -- written here only as ADR-0003's own onboarding side
+# effect (its Decision step 4), not regenerated on every regular sync.
+#
+# ".42sync-remote", not the ".git-remote" placeholder from the ADR-0001
+# draft -- namespaced to this toolkit so it can never collide with an
+# unrelated dotfile convention or a user's own hand-written filter rule
+# (design/open-questions.md #4).
+MARKER_FILENAME=".42sync-remote"
+write_marker() {  # repo-path
+  local repo="$1" name url
+  {
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      url="$(git -C "$repo" remote get-url "$name" 2>/dev/null)" || continue
+      printf '%s\t%s\n' "$name" "$url"
+    done < <(git -C "$repo" remote 2>/dev/null)
+  } > "$repo/$MARKER_FILENAME"
 }
 
 # Run bisync, keep the log, and translate rclone's cryptic failures.
@@ -639,6 +734,98 @@ EOF
     echo
     green "Done. Deleted files sit in Drive's trash for about 30 days."
     echo "bisync is unaffected — these files were never in its listings."
+    ;;
+
+  # ADR-0003: give every repo that has a remote, but none of them a
+  # github.com remote the user owns, a private GitHub repo of its own.
+  # Never touches a repo with no remote at all (Scenario A, left alone) or
+  # one that already has an owned github.com remote. A separate opt-in verb
+  # rather than folded into plain apply/check -- this creates real GitHub
+  # repos and pushes to them, a one-time, semi-consequential action per repo
+  # that deserves its own explicit preview-then-confirm step, the same way
+  # force-apply/orphans-apply/resync-apply already get one for their own
+  # kind of consequential action.
+  onboard-check|onboard-apply)
+    require_local
+    scan_onboard_candidates
+
+    if (( ${#ONBOARD_SKIPPED_BROKEN[@]} )); then
+      yellow "Skipped -- .git exists but isn't a valid repo (see design/adr/0002-remote-classification.md's Consequences for a known example of this):"
+      printf '  %s\n' "${ONBOARD_SKIPPED_BROKEN[@]}"
+      echo
+    fi
+
+    if (( ${#ONBOARD_CANDIDATES[@]} == 0 )); then
+      logmsg "RESULT: nothing to onboard"
+      green "Nothing to onboard -- every repo either has no remote at all (left alone)"
+      echo "or already has a github.com remote you own."
+      exit 0
+    fi
+
+    github_owner || die "Could not determine your GitHub login (gh api user failed).
+Run 'gh auth login' first -- see the TODO from 42sync_install.sh if you haven't."
+
+    yellow "${#ONBOARD_CANDIDATES[@]} repo(s) need a GitHub repo of their own (account: $GITHUB_OWNER):"
+    for rel in "${ONBOARD_CANDIDATES[@]}"; do
+      name="$(repo_onboard_name "$rel")"
+      printf '  %-55s -> %s/%s\n' "$rel" "$GITHUB_OWNER" "$name"
+    done
+    cat <<'EOF'
+
+For each: creates a new PRIVATE repo under your GitHub account, adds it as
+remote "github", pushes once to seed it, and writes .42sync-remote recording
+every remote (old and new). Never touches vogsphere or any other existing
+remote.
+EOF
+
+    if [[ "$MODE" == onboard-check ]]; then
+      echo
+      logmsg "RESULT: listed only -- nothing was created"
+      green "Preview only -- nothing was created. Run 'onboard-apply' to do it for real."
+      exit 0
+    fi
+
+    if [[ -n "${2:-}" ]]; then
+      [[ "$2" == "ONBOARD" ]] || die "Expected ONBOARD as the confirmation argument, got '$2'."
+    else
+      echo
+      read -r -p "Type ONBOARD to create ${#ONBOARD_CANDIDATES[@]} repo(s) for real: " reply || true
+      if [[ "$reply" != "ONBOARD" ]]; then
+        logmsg "RESULT: aborted at the confirmation prompt -- nothing was created"
+        die "Aborted — nothing was created."
+      fi
+    fi
+    logmsg "confirmed -- onboarding ${#ONBOARD_CANDIDATES[@]} repo(s)"
+
+    echo
+    failed=0
+    for rel in "${ONBOARD_CANDIDATES[@]}"; do
+      repo="$LOCAL_PATH/$rel"
+      name="$(repo_onboard_name "$rel")"
+      if git -C "$repo" remote get-url github >/dev/null 2>&1; then
+        red "skip       $rel -- a remote named 'github' already exists (not created by this run); resolve by hand."
+        logmsg "skip $rel: remote 'github' already exists"
+        failed=1
+        continue
+      fi
+      logmsg "onboarding $rel -> $GITHUB_OWNER/$name"
+      if gh repo create "$name" --private --source="$repo" --remote=github --push >>"$LOG" 2>&1; then
+        write_marker "$repo"
+        green "onboarded  $rel -> $GITHUB_OWNER/$name"
+      else
+        red "failed     $rel -> $GITHUB_OWNER/$name -- see $LOG"
+        logmsg "FAILED onboarding $rel"
+        failed=1
+      fi
+    done
+    echo
+    if (( failed )); then
+      logmsg "RESULT: completed with at least one failure or skip"
+      yellow "Some repos failed or were skipped -- see above and the log: $LOG"
+    else
+      logmsg "RESULT: onboarded ${#ONBOARD_CANDIDATES[@]} repo(s)"
+      green "Onboarding complete."
+    fi
     ;;
 
   status)
