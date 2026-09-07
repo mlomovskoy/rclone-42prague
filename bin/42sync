@@ -45,7 +45,7 @@ print_verbs() {
   orphans-check          list excluded files stranded on Drive; deletes nothing
   orphans-apply [DELETE] delete them for real
 
-  onboard-check           preview which repos need a GitHub repo of their own (ADR-0003)
+  onboard-check           preview which repos need a GitHub repo of their own
   onboard-apply [ONBOARD] create them for real: new private repo, remote, one push, marker
 
   resync-check           preview the first sync when both sides already have content
@@ -100,8 +100,8 @@ source "$LIBDIR/42-common.sh"
 source "$LIBDIR/42-configure.sh"
 
 # classify_remotes()/github_owner() -- onboard-check/onboard-apply below use
-# these to decide which repos need a GitHub repo of their own (ADR-0003) and
-# to name it (ADR-0002's ownership check). No other verb uses this file yet.
+# these to decide which repos need a GitHub repo of their own and to check
+# ownership. No other verb uses this file yet.
 source "$LIBDIR/42-remote-classify.sh"
 
 # Computes RCLONE_PASSWORD_COMMAND fresh, from the CURRENT $CONFIG_PATH, and
@@ -264,21 +264,19 @@ compute_skip_args() {
   done
 }
 
-# ADR-0003: which repos need a GitHub repo of their own. Walks the same way
+# Which repos need a GitHub repo of their own. Walks the same way
 # check_repos() does (same -H reasoning: a junction/symlink LOCAL_PATH root
 # needs following, deeper ones don't). Fills ONBOARD_CANDIDATES (repo paths
 # relative to $LOCAL_PATH that have >=1 remote already, but none owned by
-# the user on github.com -- ADR-0003's own condition, reusing
-# classify_remotes() from ADR-0002 rather than re-deriving it) and
-# ONBOARD_SKIPPED_BROKEN (a `.git` that exists but isn't a valid repo --
-# real example found auditing ADR-0002, see
-# design/adr/0002-remote-classification.md's Consequences; skipped rather
-# than crashing on it).
+# the user on github.com, reusing classify_remotes() rather than
+# re-deriving that check) and ONBOARD_SKIPPED_BROKEN (a `.git` that exists
+# but isn't a valid repo -- a real example was found auditing this on a
+# real machine; skipped rather than crashing on it).
 #
 # Deliberately does NOT cross-reference $PROJECT_FILTERS to skip
 # already-excluded projects -- the exact same known, accepted gap
-# check_repos() already has (design/open-questions.md #13), inherited here
-# rather than fixed as a side effect of an unrelated ADR.
+# check_repos() already has, inherited here rather than fixed as a side
+# effect of unrelated work.
 ONBOARD_CANDIDATES=()
 ONBOARD_SKIPPED_BROKEN=()
 scan_onboard_candidates() {
@@ -299,17 +297,15 @@ scan_onboard_candidates() {
 }
 
 # Path-derived repo name for `gh repo create`, joining every relative path
-# segment from $LOCAL_PATH -- design/open-questions.md #5's collision-
-# resistant option, chosen deliberately over the shorter "immediate parent +
-# basename" alternative: 42's Piscine exercises reuse names like "ex00"
-# across different cohorts, a real collision already visible in this
+# segment from $LOCAL_PATH -- chosen deliberately over a shorter "immediate
+# parent + basename" alternative: 42's Piscine exercises reuse names like
+# "ex00" across different cohorts, a real collision already visible in this
 # machine's own 42Prague/repos/ layout. Not PROVABLY collision-free -- "-"
 # is both the segment separator and a character GitHub allows within a
 # segment, so two sufficiently contrived distinct paths could still collapse
 # to the same name -- but collision-resistant in every real case checked,
 # and `gh repo create` failing on a genuine name clash already fails loudly
-# and skips just that repo rather than corrupting anything (open questions
-# #5's own accepted fallback).
+# and skips just that repo rather than corrupting anything.
 repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloaded
   local rel="$1" name
   name="${rel//\//-}"
@@ -326,18 +322,17 @@ repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloa
   printf '%s\n' "${name:0:100}"  # GitHub's own repo-name length limit
 }
 
-# ADR-0001's marker: a plain-text, regenerable record of every remote a repo
-# has, so a machine that receives this repo's working-tree files via Drive
-# with no local .git of its own could reconstitute one via `git clone`
-# instead of ending up with an orphaned pile of files. ADR-0001 itself
-# (stop mirroring .git/, consume this marker on the receiving end) is not
-# implemented yet -- written here only as ADR-0003's own onboarding side
-# effect (its Decision step 4), not regenerated on every regular sync.
+# A plain-text, regenerable record of every remote a repo has, so a machine
+# that receives this repo's working-tree files via Drive with no local .git
+# of its own could reconstitute one via `git clone` instead of ending up
+# with an orphaned pile of files. That reconstitution (stop mirroring
+# .git/, consume this marker on the receiving end) isn't implemented yet --
+# written here only as onboarding's own side effect, not regenerated on
+# every regular sync.
 #
-# ".42sync-remote", not the ".git-remote" placeholder from the ADR-0001
-# draft -- namespaced to this toolkit so it can never collide with an
-# unrelated dotfile convention or a user's own hand-written filter rule
-# (design/open-questions.md #4).
+# ".42sync-remote" is namespaced to this toolkit so it can never collide
+# with an unrelated dotfile convention or a user's own hand-written filter
+# rule.
 MARKER_FILENAME=".42sync-remote"
 write_marker() {  # repo-path
   local repo="$1" name url
@@ -388,7 +383,7 @@ EOF
       # vanishing from view at once, not a real rename. force doesn't fix
       # this (it doesn't even hit this guard, since it never applies the
       # skip in the first place) -- dirty-apply does, by not excluding
-      # anything. See design/open-questions.md #9.
+      # anything.
       if (( ${#SKIP_ARGS[@]} )); then
         red "Delete guard tripped -- likely the dirty-repo skip, not a rename."
         cat <<EOF
@@ -600,8 +595,8 @@ EOF
     # Deliberately NOT the same transient skip 'apply'/'check' use: force exists
     # to push a real rename through even if the renamed repo happens to be
     # dirty, and excluding it here would silently defeat that. Loud instead of
-    # silent -- see design/open-questions.md #12 (found via real-data testing:
-    # an uncommitted rename went to Drive silently before this warning existed).
+    # silent -- found via real-data testing: an uncommitted rename went to
+    # Drive silently before this warning existed.
     if (( ${#DIRTY_REPOS[@]} )); then
       echo
       red "These ${#DIRTY_REPOS[@]} repo(s) are dirty, and FORCE does not skip them the way"
@@ -736,13 +731,13 @@ EOF
     echo "bisync is unaffected — these files were never in its listings."
     ;;
 
-  # ADR-0003: give every repo that has a remote, but none of them a
-  # github.com remote the user owns, a private GitHub repo of its own.
-  # Never touches a repo with no remote at all (Scenario A, left alone) or
-  # one that already has an owned github.com remote. A separate opt-in verb
-  # rather than folded into plain apply/check -- this creates real GitHub
-  # repos and pushes to them, a one-time, semi-consequential action per repo
-  # that deserves its own explicit preview-then-confirm step, the same way
+  # Give every repo that has a remote, but none of them a github.com remote
+  # the user owns, a private GitHub repo of its own. Never touches a repo
+  # with no remote at all (left alone) or one that already has an owned
+  # github.com remote. A separate opt-in verb rather than folded into plain
+  # apply/check -- this creates real GitHub repos and pushes to them, a
+  # one-time, semi-consequential action per repo that deserves its own
+  # explicit preview-then-confirm step, the same way
   # force-apply/orphans-apply/resync-apply already get one for their own
   # kind of consequential action.
   onboard-check|onboard-apply)
@@ -750,7 +745,7 @@ EOF
     scan_onboard_candidates
 
     if (( ${#ONBOARD_SKIPPED_BROKEN[@]} )); then
-      yellow "Skipped -- .git exists but isn't a valid repo (see design/adr/0002-remote-classification.md's Consequences for a known example of this):"
+      yellow "Skipped -- .git exists but isn't a valid repo (a real machine can end up with one that has HEAD/config but no objects/refs, e.g. from an interrupted clone):"
       printf '  %s\n' "${ONBOARD_SKIPPED_BROKEN[@]}"
       echo
     fi

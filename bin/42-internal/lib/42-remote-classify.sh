@@ -1,13 +1,9 @@
-# Classifies a repo's git remotes by purpose -- ADR-0002 (see
-# design/adr/0002-remote-classification.md; design/ is local-only, excluded
-# from git via .git/info/exclude, so it won't be there in an installed
-# ~/bin copy -- this comment is for whoever is reading the repo clone).
+# Classifies a repo's git remotes by purpose.
 #
 # A single uniform rule ("any github.com remote is the trusted one") breaks
 # for a fork (origin yours, upstream not) and for a clone of someone else's
-# public repo (a github.com remote that isn't yours) -- see
-# design/scenarios/remote-configurations.md, Scenarios D and F. So this
-# splits the rule by what the remote is being used FOR, not by host alone:
+# public repo (a github.com remote that isn't yours). So this splits the
+# rule by what the remote is being used FOR, not by host alone:
 #
 #   bootstrap/clone source -- any github.com remote, preferring one the user
 #                              owns if more than one qualifies
@@ -16,9 +12,8 @@
 #   auto-push target       -- only github.com remote(s) the user owns, never
 #                              anything else
 #
-# No consumer has landed yet (ADR-0001/0003, which would call this from
-# 42sync itself, are still Proposed) -- this file is a standalone building
-# block for them. Run directly for a standalone check against a real repo:
+# Used by 42sync's onboard-check/onboard-apply verbs. Run directly for a
+# standalone check against a real repo:
 #   bash bin/42-internal/lib/42-remote-classify.sh /path/to/repo
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -30,11 +25,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # `42sync` pass) only pays the API call once, not once per repo.
 #
 # Not fatal if it can't be determined -- confirmed for real on this machine:
-# gh is installed (ADR-0006) but not yet `gh auth login`-ed, the exact
-# "fresh machine" gap ADR-0002 already flags as unresolved. Every caller
-# below degrades safely when this returns 1: classify_remotes() just never
-# adds anything to REMOTE_PUSH, and falls back to "first github.com remote,
-# unordered by ownership" for REMOTE_BOOTSTRAP.
+# gh can be installed but not yet `gh auth login`-ed, a real gap on any
+# fresh machine. Every caller below degrades safely when this returns 1:
+# classify_remotes() just never adds anything to REMOTE_PUSH, and falls back
+# to "first github.com remote, unordered by ownership" for REMOTE_BOOTSTRAP.
 GITHUB_OWNER=""
 GITHUB_OWNER_CHECKED=0
 github_owner() {  # sets GITHUB_OWNER; returns 1 if it could not be determined
@@ -78,9 +72,8 @@ remote_host() {  # url
 # The path segment right after the host -- for github.com, that's the owner
 # (github.com/OWNER/repo or git@github.com:OWNER/repo). Same three URL
 # shapes as remote_host(), kept as a separate function rather than one that
-# returns both: callers of remote_host() alone (nothing here yet, but this
-# is a building block for ADR-0001/0003 too) shouldn't have to care about
-# owner-segment parsing they don't need.
+# returns both: a future caller of remote_host() alone shouldn't have to
+# care about owner-segment parsing it doesn't need.
 remote_owner_segment() {  # url
   local url="$1" rest
   case "$url" in
@@ -117,7 +110,7 @@ classify_remotes() {  # repo-path
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     REMOTE_NAMES+=("$name")
-    REMOTE_PULL+=("$name")  # every remote, any host -- ADR-0002's pull rule
+    REMOTE_PULL+=("$name")  # every remote, any host -- the pull rule above
 
     url="$(git -C "$repo" remote get-url "$name" 2>/dev/null)" || continue
     host="$(remote_host "$url")"

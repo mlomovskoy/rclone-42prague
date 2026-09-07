@@ -507,10 +507,10 @@ detect_gh() {
 }
 
 # gh install failures are never fatal to the rest of this script: unlike
-# rclone, nothing implemented yet depends on gh (ADR-0002/0003 in
-# design/adr/ are still Proposed), so a policy gate or a bad download here
-# must not block rclone, the 42* scripts, or shell setup from installing.
-# Reports loudly and adds a TODO instead of calling die().
+# rclone, nothing else in this toolkit depends on gh being present yet, so
+# a policy gate or a bad download here must not block rclone, the 42*
+# scripts, or shell setup from installing. Reports loudly and adds a TODO
+# instead of calling die().
 gh_fail() {  # message
   red "$*"
   logmsg "gh install: $*"
@@ -789,12 +789,12 @@ post_checks() {
     green "ok         rclone config exists"
     # Skipped on Windows: NTFS has no POSIX permission bits, so MSYS's stat
     # here reports a mode *synthesized* from the file's ACL, not a real one --
-    # confirmed against a real config (design/open-questions.md #14): it
-    # reports 644 even when the actual ACL already restricts access to just
-    # the owning account plus SYSTEM/Administrators, and chmod 600 changes
-    # neither the reported mode nor the ACL. Warning "not 600" and
-    # recommending a chmod that provably does nothing would be a pure false
-    # positive there, not a real gap in the file's security.
+    # confirmed against a real config: it reports 644 even when the actual
+    # ACL already restricts access to just the owning account plus
+    # SYSTEM/Administrators, and chmod 600 changes neither the reported mode
+    # nor the ACL. Warning "not 600" and recommending a chmod that provably
+    # does nothing would be a pure false positive there, not a real gap in
+    # the file's security.
     if [[ "$OS" != windows ]] && have stat; then
       perms="$(stat -c '%a' "$conf" 2>/dev/null || stat -f '%Lp' "$conf" 2>/dev/null || echo '')"
       if [[ -n "$perms" && "$perms" != "600" ]]; then

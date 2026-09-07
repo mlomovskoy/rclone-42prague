@@ -32,7 +32,7 @@ logmsg() { [[ -n "${LOG:-}" ]] || return 0; printf '%s\n' "$*" >> "$LOG" 2>/dev/
 # branch above, clean-check/clean-apply) unable to recognize or manage it
 # again. Confirmed this happens even on an account that already HAS
 # SeCreateSymbolicLinkPrivilege -- MSYS just doesn't attempt the privileged,
-# properly-detectable path by default. See design/open-questions.md #10.
+# properly-detectable path by default.
 #
 # Try that privileged path explicitly first (MSYS=winsymlinks:nativestrict);
 # it is a no-op on Linux/macOS, where this whole problem does not exist. Only
