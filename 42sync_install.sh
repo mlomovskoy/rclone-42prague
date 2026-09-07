@@ -787,7 +787,15 @@ post_checks() {
 
   if [[ -f "$conf" ]]; then
     green "ok         rclone config exists"
-    if have stat; then
+    # Skipped on Windows: NTFS has no POSIX permission bits, so MSYS's stat
+    # here reports a mode *synthesized* from the file's ACL, not a real one --
+    # confirmed against a real config (design/open-questions.md #14): it
+    # reports 644 even when the actual ACL already restricts access to just
+    # the owning account plus SYSTEM/Administrators, and chmod 600 changes
+    # neither the reported mode nor the ACL. Warning "not 600" and
+    # recommending a chmod that provably does nothing would be a pure false
+    # positive there, not a real gap in the file's security.
+    if [[ "$OS" != windows ]] && have stat; then
       perms="$(stat -c '%a' "$conf" 2>/dev/null || stat -f '%Lp' "$conf" 2>/dev/null || echo '')"
       if [[ -n "$perms" && "$perms" != "600" ]]; then
         yellow "warn       $conf is mode $perms, not 600"
