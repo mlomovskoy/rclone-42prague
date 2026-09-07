@@ -1,6 +1,29 @@
 # Excluded from sync. Lines starting with "- " are excludes.
 # .git is deliberately NOT excluded — repos sync whole.
 #
+# ADR-0004 (design/adr/0004-git-info-exclude-carveout.md; design/ is
+# local-only, excluded from git, so it won't be here in an installed copy --
+# this note is for whoever reads the repo clone): a global carve-out for
+# .git/info/exclude, ordered ahead of any future per-repo "- .../.git/**"
+# rule ADR-0005 will generate at onboarding time (ADR-0001/0003/0005 are
+# still Proposed -- nothing generates that exclude yet, so this is currently
+# a harmless no-op: with no ".git/**" rule anywhere yet, .git/info/exclude
+# already syncs as part of the whole .git/ tree, same as before this line
+# existed). Pre-positioned now so the ordering is already correct whenever
+# that lands, rather than something to remember to insert above it later.
+#
+# The "**/" prefix here is deliberate and confirmed correct, not the bug the
+# next paragraph warns about: unlike a single-segment pattern (*.o), this is
+# a multi-segment path containing "/", which rclone anchors to the filter
+# root UNLESS it starts with "**/" -- tested directly: a bare
+# ".git/info/exclude" (no "**/") matched NOTHING in a real rclone run,
+# against fixtures one and three directories deep, because no repo under
+# this toolkit's $LOCAL_PATH ever sits AT the sync root itself (there's
+# always at least the project-folder segment before ".git"), so the "**/
+# needs one real directory component first" gap the next paragraph
+# describes for single-segment globs never actually applies here.
++ **/.git/info/exclude
+#
 # IMPORTANT: never prefix a pattern here with "**/" to mean "at any depth
 # including the root" -- in rclone's filter syntax, "**/" requires at least
 # one real directory component before it, so "**/*.o" silently misses a .o
