@@ -18,6 +18,7 @@ VERBS=(
   force-check force-apply
   orphans-check orphans-apply
   onboard-check onboard-apply
+  reconstitute
   resync-check resync-apply
   seed status
   configure-set configure-reset configure-show
@@ -47,6 +48,9 @@ print_verbs() {
 
   onboard-check           preview which repos need a GitHub repo of their own
   onboard-apply [ONBOARD] create them for real: new private repo, remote, one push, marker
+
+  reconstitute           list repos with a marker but no local .git, and the clone
+                         command to fix each -- never clones automatically
 
   resync-check           preview the first sync when both sides already have content
   resync-apply [RESYNC]  apply it for real
@@ -218,7 +222,7 @@ trap on_exit EXIT
 # force-check and force-apply logs can never double-match each other's glob.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,reconstitute,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -888,6 +892,67 @@ EOF
     else
       logmsg "RESULT: onboarded ${#ONBOARD_CANDIDATES[@]} repo(s)"
       green "Onboarding complete."
+    fi
+    ;;
+
+  # ADR-0001's other half: a machine that received an onboarded repo's
+  # working-tree files via Drive but never cloned it itself. Detects "has
+  # the marker, no local .git" and prints the resolved clone command --
+  # never runs it, deliberately: cloning into a folder that already has
+  # bisync-delivered files needs care (the target isn't empty), so this
+  # stays a printed recipe, same as every other consequential path in this
+  # toolkit. No check/apply split -- nothing here is ever applied by this
+  # script itself.
+  reconstitute)
+    require_local
+    found=0
+    while IFS= read -r -d '' marker; do
+      repo="$(dirname "$marker")"
+      rel="${repo#$LOCAL_PATH/}"
+      # A .git FILE (not a directory) is a submodule or `git worktree add`
+      # gitlink -- already a legitimate, working checkout, just not in the
+      # usual shape. Only a repo with NEITHER needs reconstituting.
+      [[ -e "$repo/.git" ]] && continue
+      found=1
+
+      # onboard-apply always names the remote it creates "github" -- the
+      # only writer of this marker today, so that line is the safe
+      # bootstrap source. Falls back to the marker's first line if that
+      # ever changes and no line is named "github".
+      url="$(awk -F'\t' '$1 == "github" {print $2; exit}' "$marker")"
+      [[ -n "$url" ]] || url="$(awk -F'\t' 'NR==1{print $2}' "$marker")"
+      if [[ -z "$url" ]]; then
+        yellow "skip       $rel -- marker exists but is empty or unreadable"
+        continue
+      fi
+
+      # basename first (command substitution strips its trailing newline),
+      # THEN sanitize via bash's own substitution -- piping straight into
+      # `tr -c` instead would translate that trailing newline into an
+      # extra, unwanted "-" of its own before it ever gets stripped.
+      safe_name="$(basename "$rel")"
+      safe_name="${safe_name//[^A-Za-z0-9._-]/-}"
+      echo
+      yellow "$rel has a marker but no .git:"
+      cat <<EOF
+  git clone "$url" "/tmp/${safe_name}-reconstituted"
+  # Compare its checkout against the working tree already here (it arrived
+  # via Drive, so it should mostly match) -- then move its .git into place:
+  mv "/tmp/${safe_name}-reconstituted/.git" "$repo/.git"
+  cd "$repo" && git status
+  # Anything git reports as modified is real content that reached this
+  # machine after the clone's last commit -- review it, don't discard it.
+  rm -rf "/tmp/${safe_name}-reconstituted"
+EOF
+    done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
+
+    if (( ! found )); then
+      logmsg "RESULT: nothing needs reconstituting"
+      green "Nothing needs reconstituting -- every marker has a local .git already."
+    else
+      logmsg "RESULT: listed reconstitution commands -- nothing was run"
+      echo
+      yellow "Nothing above was run. Copy the commands for whichever repo you want to fix."
     fi
     ;;
 
