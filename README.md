@@ -197,8 +197,8 @@ plain `find` to be safe.
 Everything in this repo runs natively on Windows via Git for Windows' bash —
 that's the simpler default, needs no extra install, and is what's documented
 throughout. But native Windows has real limitations a Linux environment
-doesn't. Hit directly while setting this up (each has its own
-TROUBLESHOOTING.md entry, linked there):
+doesn't. Hit directly while setting this up (the first three each have their
+own TROUBLESHOOTING.md entry, linked there):
 
 - Creating symlinks needs either elevation or a one-time Developer
   Mode/`secpol.msc` grant.
@@ -214,8 +214,9 @@ TROUBLESHOOTING.md entry, linked there):
   indexer) has it open — Windows locks directories far more readily than
   Linux does.
 - `find` on a junctioned `~/Projects` (see above) can intermittently fail to
-  traverse into it at all — `42sync` already works around this, but pass
-  `find -H` yourself if you ever script against it directly.
+  traverse into it at all — `42sync` already works around this in its own
+  code (no TROUBLESHOOTING.md entry needed), but pass `find -H` yourself if
+  you ever script against it directly.
 
 Known general Windows/git friction not specifically hit by this toolkit, but
 worth knowing about if you're deciding between native and WSL:
