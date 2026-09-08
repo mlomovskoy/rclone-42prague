@@ -1,25 +1,19 @@
 # Excluded from sync. Lines starting with "- " are excludes.
 # .git is deliberately NOT excluded — repos sync whole.
 #
-# A global carve-out for .git/info/exclude, ordered ahead of any future
-# per-repo "- .../.git/**" rule a later change might generate at onboarding
-# time (nothing generates that exclude yet, so this is currently a harmless
-# no-op: with no ".git/**" rule anywhere yet, .git/info/exclude already
-# syncs as part of the whole .git/ tree, same as before this line existed).
-# Pre-positioned now so the ordering is already correct whenever that
-# lands, rather than something to remember to insert above it later.
-#
-# The "**/" prefix here is deliberate and confirmed correct, not the bug the
-# next paragraph warns about: unlike a single-segment pattern (*.o), this is
-# a multi-segment path containing "/", which rclone anchors to the filter
-# root UNLESS it starts with "**/" -- tested directly: a bare
-# ".git/info/exclude" (no "**/") matched NOTHING in a real rclone run,
-# against fixtures one and three directories deep, because no repo under
-# this toolkit's $LOCAL_PATH ever sits AT the sync root itself (there's
-# always at least the project-folder segment before ".git"), so the "**/
-# needs one real directory component first" gap the next paragraph
-# describes for single-segment globs never actually applies here.
-+ **/.git/info/exclude
+# A global "+ **/.git/info/exclude" carve-out lived here briefly and was
+# reverted after real testing (against this machine's actual project-scoped
+# sync, not just isolated fixtures) showed it was not the harmless no-op it
+# was believed to be: a project-selection file elsewhere (this toolkit's
+# per-machine include/exclude list) works by allowlisting synced projects
+# and excluding everything else with a catch-all rule -- but rclone filters
+# are first-match-wins across every --filter-from file combined, in the
+# order they're given on the command line, and this carve-out's blanket "+"
+# was checked BEFORE that catch-all, so it leaked .git/info/exclude out of
+# every excluded project too, not just the ones actually being synced.
+# Confirmed for real: a plain sync check reported spurious mass "deletes"
+# once this rule met the project-selection file at real scale. Reintroduce
+# only once it can be scoped to not bypass project selection.
 #
 # IMPORTANT: never prefix a pattern here with "**/" to mean "at any depth
 # including the root" -- in rclone's filter syntax, "**/" requires at least
