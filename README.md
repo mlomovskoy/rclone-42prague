@@ -100,6 +100,13 @@ docs/                        GitHub Pages site (home / privacy / terms)
 of service URL on a real domain before an OAuth app can be published out of "Testing". It is served at
 `https://<your-github-username>.github.io/rclone-42prague/`.
 
+The contact address on those three pages is the original author's. Set your own
+before publishing your fork's copy: `./docs/set-email.sh you@example.com` (or run
+with no argument to be prompted) rewrites all three pages consistently. The
+address is stored reversed, not plain text (`docs/email.js` decodes it client-side),
+so a scraper reading the raw HTML doesn't find a usable one — the script computes
+that obfuscated form for you.
+
 ## Configuration
 
 | Setting | Value |
