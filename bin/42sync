@@ -121,11 +121,44 @@ mkdir -p "$LOG_PATH" "$WORK_PATH" "$(dirname "$FILE_FILTERS")"
 }
 [[ -f "$PROJECT_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-local.txt" "$PROJECT_FILTERS"
 
+# A repo that has this marker at its root (written by onboard-apply) is
+# "onboarded" -- has a GitHub remote of its own, so its .git/** no longer
+# needs to ride along through bisync whole. Referenced here (for the
+# exclusion below) and by write_marker() further down.
+MARKER_FILENAME=".42sync-remote"
+
+# Every onboarded repo's .git/** gets excluded from bisync, computed fresh
+# from which repos currently have $MARKER_FILENAME rather than persisted
+# into $FILE_FILTERS -- so this can never go stale independently of the
+# markers themselves, and never needs its own "regenerate on onboarding"
+# step. A repo with no marker yet keeps syncing .git/ the old way.
+GIT_EXCLUDE_PATTERNS=()
+while IFS= read -r -d '' marker; do
+  onboarded_repo="$(dirname "$marker")"
+  GIT_EXCLUDE_PATTERNS+=("/${onboarded_repo#$LOCAL_PATH/}/.git/**")
+done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
+
 # Both filter files, in one place, for every command that must see what this
 # machine actually syncs. NOT used by 'orphans-*' -- see the note on PROJECT_FILTERS.
 FILTER_ARGS=(--filter-from "$FILE_FILTERS")
 if grep -qE '^- ' "$PROJECT_FILTERS" 2>/dev/null; then
   FILTER_ARGS+=(--filter-from "$PROJECT_FILTERS")
+fi
+
+# A SEPARATE --filter-from, not --exclude/--filter: confirmed with rclone's
+# own --dump filters that a bare --exclude/--filter flag is always spliced
+# in BEFORE any --filter-from's rules, regardless of where it sits on the
+# command line -- which would silently defeat the .git/info/exclude
+# carve-out that lives inside $FILE_FILTERS for every onboarded repo (that
+# carve-out only works if it's checked before the broader .git/** exclude
+# below, first-match-wins). Multiple --filter-from flags DO combine in
+# command-line order, so putting this one after $FILE_FILTERS on the
+# command line preserves the carve-out's precedence correctly.
+GIT_EXCLUDE_FILE=""
+if (( ${#GIT_EXCLUDE_PATTERNS[@]} )); then
+  GIT_EXCLUDE_FILE="$(mktemp)"
+  printf -- '- %s\n' "${GIT_EXCLUDE_PATTERNS[@]}" > "$GIT_EXCLUDE_FILE"
+  FILTER_ARGS+=(--filter-from "$GIT_EXCLUDE_FILE")
 fi
 
 # --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
@@ -171,7 +204,11 @@ logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
 # there are many ways out of this script and they were not all covering it.
 # Rotation happens here too: every mode that writes a log also rotates, including
 # the ones that run no rclone at all, so pruning cannot live in the sync paths only.
-on_exit() { prune_logs; printf '\033[32mLog: %s\033[0m\n' "$LOG"; }
+on_exit() {
+  [[ -n "$GIT_EXCLUDE_FILE" && -f "$GIT_EXCLUDE_FILE" ]] && rm -f "$GIT_EXCLUDE_FILE"
+  prune_logs
+  printf '\033[32mLog: %s\033[0m\n' "$LOG"
+}
 trap on_exit EXIT
 
 # Prunes this script's logs only, by verb, keeping the newest KEEP_LOGS across
@@ -325,15 +362,11 @@ repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloa
 # A plain-text, regenerable record of every remote a repo has, so a machine
 # that receives this repo's working-tree files via Drive with no local .git
 # of its own could reconstitute one via `git clone` instead of ending up
-# with an orphaned pile of files. That reconstitution (stop mirroring
-# .git/, consume this marker on the receiving end) isn't implemented yet --
-# written here only as onboarding's own side effect, not regenerated on
-# every regular sync.
-#
-# ".42sync-remote" is namespaced to this toolkit so it can never collide
-# with an unrelated dotfile convention or a user's own hand-written filter
-# rule.
-MARKER_FILENAME=".42sync-remote"
+# with an orphaned pile of files. That reconstitution (consuming this
+# marker on the receiving end) isn't implemented yet -- written here only as
+# onboarding's own side effect, not regenerated on every regular sync.
+# $MARKER_FILENAME itself is set near the top of this script, alongside
+# FILTER_ARGS, since the per-repo .git/** exclusion below also needs it.
 write_marker() {  # repo-path
   local repo="$1" name url
   {
@@ -343,6 +376,20 @@ write_marker() {  # repo-path
       printf '%s\t%s\n' "$name" "$url"
     done < <(git -C "$repo" remote 2>/dev/null)
   } > "$repo/$MARKER_FILENAME"
+}
+
+# True if any GIT_EXCLUDE_PATTERNS repo path appears in this run's bisync
+# output -- i.e. the deletes the guard tripped on actually correlate with a
+# repo whose .git/** just started being excluded, not just "some repo
+# somewhere is onboarded." Used by run_bisync's delete-guard diagnosis
+# below to avoid a generic, possibly-wrong guess.
+git_exclude_repo_in_log() {  # this-run-log-text
+  local p prefix
+  for p in "${GIT_EXCLUDE_PATTERNS[@]}"; do
+    prefix="${p#/}"; prefix="${prefix%/.git/**}"
+    grep -qF "$prefix/.git/" <<<"$1" && return 0
+  done
+  return 1
 }
 
 # Run bisync, keep the log, and translate rclone's cryptic failures.
@@ -398,6 +445,22 @@ actually deleted; it's just this run's transient skip working as designed.
 
 force-check/force-apply will NOT help here -- that overrides the guard for a
 genuine rename, which this is not.
+EOF
+      elif git_exclude_repo_in_log "$this_run"; then
+        red "Delete guard tripped -- likely a repo's .git/** being excluded for the first time."
+        cat <<EOF
+
+A repo just onboarded (or one whose .git/ was already excluded, but Drive
+still has old objects from before it was) makes bisync's baseline see a
+big batch of .git/objects/* paths vanish at once -- that reads exactly like
+a mass deletion, even though it is really this one-time transition working
+as designed.
+
+  Push the one-time exclusion through:  42sync force-check   (then force-apply)
+
+If nothing was recently onboarded, treat this as a genuine "too many
+deletes" instead -- check what actually moved or was removed before
+forcing anything through.
 EOF
       else
         red "Delete guard tripped."
@@ -633,7 +696,12 @@ EOF
   # deletes, and it should never happen as a side effect of something else.
   orphans-check|orphans-apply)
     mapfile -t EXCL < <(grep -E '^- ' "$FILE_FILTERS" | sed 's/^- //')
-    (( ${#EXCL[@]} )) || die "No exclude rules in $FILE_FILTERS — nothing can be orphaned."
+    # Also the per-repo .git/** patterns computed near the top of this
+    # script -- without these, a repo's now-excluded .git/objects/* (synced
+    # whole before it was onboarded) would be invisible to this cleanup too,
+    # exactly the "stranded on Drive" problem this verb exists to catch.
+    EXCL+=("${GIT_EXCLUDE_PATTERNS[@]}")
+    (( ${#EXCL[@]} )) || die "No exclude rules found — nothing can be orphaned."
     INC=()
     for pat in "${EXCL[@]}"; do INC+=(--include "$pat"); done
 
