@@ -12,8 +12,12 @@
 # was checked BEFORE that catch-all, so it leaked .git/info/exclude out of
 # every excluded project too, not just the ones actually being synced.
 # Confirmed for real: a plain sync check reported spurious mass "deletes"
-# once this rule met the project-selection file at real scale. Reintroduce
-# only once it can be scoped to not bypass project selection.
+# once this rule met the project-selection file at real scale. Reintroduced
+# since, scoped this time: 42sync itself generates the include fresh every
+# run, one pair of patterns per currently-included project by name, rather
+# than a bare pattern living in this file at all -- see the .env.example
+# section further down for the same fix applied to a second, pre-existing
+# instance of this exact bug class.
 #
 # IMPORTANT: never prefix a pattern here with "**/" to mean "at any depth
 # including the root" -- in rclone's filter syntax, "**/" requires at least
@@ -254,8 +258,17 @@
 # fanning credentials out across every machine this syncs to, tracked in git
 # or not (this tool doesn't check). .env.example is the one deliberate
 # exception: by convention it's a template meant to be shared, holding no
-# real secrets -- the include must come before the excludes below, since
-# rclone filters take the first matching rule.
-+ .env.example
+# real secrets.
+#
+# The include is NOT written here as a bare "+ .env.example" line anymore --
+# 42sync itself generates it, scoped to each currently-included project by
+# name, and positioned ahead of this whole file on the command line. A bare
+# "+" rule here would leak .env.example out of any project excluded from
+# this machine entirely: any unanchored "+" file rule makes rclone allow
+# descending into every directory to look for a match, checked before
+# project selection's own catch-all exclude. Confirmed the hard way for
+# .git/info/exclude (see that carve-out's own history at the top of this
+# file); .env.example has the identical shape, so it gets the identical fix
+# rather than shipping the same bug twice.
 - .env
 - .env.*

@@ -142,22 +142,73 @@ while IFS= read -r -d '' marker; do
   GIT_EXCLUDE_PATTERNS+=("/${onboarded_repo#$LOCAL_PATH/}/.git/**")
 done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
 
+# .git/info/exclude and .env.example both need a carve-out from a broader
+# exclude elsewhere (the per-repo .git/** exclude below for the first, the
+# plain .env/.env.* excludes in $FILE_FILTERS for the second) -- but a bare,
+# unanchored "+" rule for either (the shape ADR-0004 originally shipped,
+# and reverted, for .git/info/exclude) makes rclone auto-generate a
+# directory rule allowing descent into EVERY directory, confirmed via
+# `rclone --dump filters` -- checked before $PROJECT_FILTERS's own
+# project-selection catch-all, leaking the target file out of a project
+# excluded from this machine entirely. See
+# design/adr/0004-git-info-exclude-carveout.md and
+# design/open-questions.md #15 for the full incident (found for
+# .git/info/exclude, confirmed to affect .env.example the same way).
+#
+# Fixed by scoping the carve-out to each CURRENTLY INCLUDED project by
+# name (e.g. "+ /rclone-42prague/**/.git/info/exclude") instead of a bare
+# pattern -- confirmed via --dump filters that an anchored pattern like
+# this produces directory-allow rules scoped to just that project's own
+# prefix, not "allow descend into anything." Computed fresh every run from
+# $PROJECT_FILTERS's own "+" lines (same "recompute derived state" pattern
+# GIT_EXCLUDE_PATTERNS above already uses) -- a project excluded from this
+# machine gets no pattern at all, so it has nothing to leak through, and an
+# included project never needs a line added or removed by hand.
+#
+# Two patterns per project per target, not one: "**/ " requires at least
+# one real directory component before it (the same gotcha $FILE_FILTERS's
+# own header warns about for single-segment globs) -- a project that IS
+# itself a repo (rclone-42prague/.git/info/exclude, no nesting) needs the
+# un-wildcarded form; a project containing nested repos (42Prague's own
+# repos/*/.git/info/exclude) needs the "**/ " form. Confirmed both are
+# needed against real fixtures at both nesting depths.
+CARVEOUT_TARGETS=(".git/info/exclude" ".env.example")
+CARVEOUT_PATTERNS=()
+while IFS= read -r project; do
+  [[ -n "$project" ]] || continue
+  for target in "${CARVEOUT_TARGETS[@]}"; do
+    CARVEOUT_PATTERNS+=("/${project}/${target}")
+    CARVEOUT_PATTERNS+=("/${project}/**/${target}")
+  done
+done < <(sed -nE 's#^\+ /([^/]+)/\*\*$#\1#p' "$PROJECT_FILTERS" 2>/dev/null)
+
 # Both filter files, in one place, for every command that must see what this
 # machine actually syncs. NOT used by 'orphans-*' -- see the note on PROJECT_FILTERS.
-FILTER_ARGS=(--filter-from "$FILE_FILTERS")
+FILTER_ARGS=()
+
+# Must be FIRST on the command line: confirmed with rclone's own --dump
+# filters that a bare --exclude/--filter flag is always spliced in BEFORE
+# any --filter-from's rules regardless of where it sits, but multiple
+# --filter-from flags DO combine in command-line order -- so being first
+# here is what lets these carve-outs actually override $FILE_FILTERS's own
+# .env excludes and the per-repo .git/** exclude below, both of which they
+# need to win against.
+CARVEOUT_FILE=""
+if (( ${#CARVEOUT_PATTERNS[@]} )); then
+  CARVEOUT_FILE="$(mktemp)"
+  printf -- '+ %s\n' "${CARVEOUT_PATTERNS[@]}" > "$CARVEOUT_FILE"
+  FILTER_ARGS+=(--filter-from "$CARVEOUT_FILE")
+fi
+
+FILTER_ARGS+=(--filter-from "$FILE_FILTERS")
 if grep -qE '^- ' "$PROJECT_FILTERS" 2>/dev/null; then
   FILTER_ARGS+=(--filter-from "$PROJECT_FILTERS")
 fi
 
-# A SEPARATE --filter-from, not --exclude/--filter: confirmed with rclone's
-# own --dump filters that a bare --exclude/--filter flag is always spliced
-# in BEFORE any --filter-from's rules, regardless of where it sits on the
-# command line -- which would silently defeat the .git/info/exclude
-# carve-out that lives inside $FILE_FILTERS for every onboarded repo (that
-# carve-out only works if it's checked before the broader .git/** exclude
-# below, first-match-wins). Multiple --filter-from flags DO combine in
-# command-line order, so putting this one after $FILE_FILTERS on the
-# command line preserves the carve-out's precedence correctly.
+# Also a SEPARATE --filter-from positioned last, for the same reason the
+# carve-out file above must be first: command-line order among multiple
+# --filter-from flags is what's respected, and this one needs to be checked
+# AFTER the carve-out file's own .git/info/exclude rule, not before it.
 GIT_EXCLUDE_FILE=""
 if (( ${#GIT_EXCLUDE_PATTERNS[@]} )); then
   GIT_EXCLUDE_FILE="$(mktemp)"
@@ -210,6 +261,7 @@ logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
 # the ones that run no rclone at all, so pruning cannot live in the sync paths only.
 on_exit() {
   [[ -n "$GIT_EXCLUDE_FILE" && -f "$GIT_EXCLUDE_FILE" ]] && rm -f "$GIT_EXCLUDE_FILE"
+  [[ -n "$CARVEOUT_FILE" && -f "$CARVEOUT_FILE" ]] && rm -f "$CARVEOUT_FILE"
   prune_logs
   printf '\033[32mLog: %s\033[0m\n' "$LOG"
 }
