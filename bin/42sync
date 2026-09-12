@@ -125,6 +125,15 @@ mkdir -p "$LOG_PATH" "$WORK_PATH" "$(dirname "$FILE_FILTERS")"
 }
 [[ -f "$PROJECT_FILTERS" ]] || cp "$DEFAULTS_DIR/filters/projects-local.txt" "$PROJECT_FILTERS"
 
+# One path per line, relative to a repo's own root -- same "materialize once
+# from a template, then hands off for good" pattern as $PROJECT_FILTERS
+# itself (see 42-common.sh), just for this list instead of project
+# selection. Read fresh below rather than hardcoded, so a machine that hits
+# a THIRD real case (a project needing some other local-only .git/ file
+# carved out) is a one-line edit to this file, not to this script.
+CARVEOUT_TARGETS_FILE="$CONFIG_PATH/filters/carveout-targets.txt"
+[[ -f "$CARVEOUT_TARGETS_FILE" ]] || cp "$DEFAULTS_DIR/filters/carveout-targets.txt" "$CARVEOUT_TARGETS_FILE"
+
 # A repo that has this marker at its root (written by onboard-apply) is
 # "onboarded" -- has a GitHub remote of its own, so its .git/** no longer
 # needs to ride along through bisync whole. Referenced here (for the
@@ -142,16 +151,18 @@ while IFS= read -r -d '' marker; do
   GIT_EXCLUDE_PATTERNS+=("/${onboarded_repo#$LOCAL_PATH/}/.git/**")
 done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
 
-# .git/info/exclude and .env.example both need a carve-out from a broader
-# exclude elsewhere (the per-repo .git/** exclude below for the first, the
-# plain .env/.env.* excludes in $FILE_FILTERS for the second). A bare,
-# unanchored "+" rule for either makes rclone auto-generate a directory
-# rule allowing descent into EVERY directory, confirmed via `rclone --dump
-# filters` -- checked before $PROJECT_FILTERS's own project-selection
-# catch-all, leaking the target file out of a project excluded from this
-# machine entirely. Found and fixed for real once already (a global,
-# unscoped version of the .git/info/exclude rule below shipped, leaked,
-# and got reverted before this scoped version replaced it).
+# Each target in $CARVEOUT_TARGETS_FILE (.git/info/exclude and .env.example,
+# by default -- the two confirmed real cases) needs a carve-out from a
+# broader exclude elsewhere (the per-repo .git/** exclude below for the
+# first, the plain .env/.env.* excludes in $FILE_FILTERS for the second). A
+# bare, unanchored "+" rule for either makes rclone auto-generate a
+# directory rule allowing descent into EVERY directory, confirmed via
+# `rclone --dump filters` -- checked before $PROJECT_FILTERS's own
+# project-selection catch-all, leaking the target file out of a project
+# excluded from this machine entirely. Found and fixed for real once
+# already (a global, unscoped version of the .git/info/exclude rule below
+# shipped, leaked, and got reverted before this scoped version replaced
+# it).
 #
 # Fixed by scoping the carve-out to each CURRENTLY INCLUDED project by
 # name (e.g. "+ /rclone-42prague/**/.git/info/exclude") instead of a bare
@@ -170,7 +181,11 @@ done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/n
 # un-wildcarded form; a project containing nested repos (42Prague's own
 # repos/*/.git/info/exclude) needs the "**/ " form. Confirmed both are
 # needed against real fixtures at both nesting depths.
-CARVEOUT_TARGETS=(".git/info/exclude" ".env.example")
+CARVEOUT_TARGETS=()
+while IFS= read -r target; do
+  [[ -n "$target" && "$target" != '#'* ]] || continue
+  CARVEOUT_TARGETS+=("$target")
+done < "$CARVEOUT_TARGETS_FILE"
 CARVEOUT_PATTERNS=()
 while IFS= read -r project; do
   [[ -n "$project" ]] || continue

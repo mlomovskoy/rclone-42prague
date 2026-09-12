@@ -1,0 +1,24 @@
+# Files inside .git/ that should keep syncing via Drive even for an
+# onboarded repo (whose .git/** is otherwise excluded from bisync) --
+# one path per line, relative to a repo's own root. Blank lines and lines
+# starting with "#" are ignored.
+#
+# Each gets a carve-out generated fresh every run, scoped to every
+# currently-included project by name (see 42sync) -- an excluded project
+# gets no carve-out for it at all, so nothing leaks out of project
+# selection the way a bare, unscoped rule would.
+#
+# This file is per-machine and is never synced (same "materialize once
+# from the template, then hands off for good" convention as
+# projects-local.txt) -- add your own local-only .git/ file here if you
+# have one that should survive the .git/** exclusion once a repo is
+# onboarded.
+
+# .git/info/exclude: a personal preference file, like .gitignore but
+# local-only and never committed -- worth carrying across your own
+# machines even though the rest of .git/ is excluded once onboarded.
+.git/info/exclude
+
+# .env.example: a template meant to be shared, carved out from the
+# broader .env/.env.* excludes elsewhere in the filter file.
+.env.example
