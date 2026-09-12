@@ -981,9 +981,10 @@ EOF
     fi
     ;;
 
-  # ADR-0001's other half: a machine that received an onboarded repo's
-  # working-tree files via Drive but never cloned it itself. Detects "has
-  # the marker, no local .git" and prints the resolved clone command --
+  # The other half of the onboarding design: a machine that received an
+  # onboarded repo's working-tree files via Drive but never cloned it
+  # itself. Detects "has the marker, no local .git" and prints the
+  # resolved clone command --
   # never runs it, deliberately: cloning into a folder that already has
   # bisync-delivered files needs care (the target isn't empty), so this
   # stays a printed recipe, same as every other consequential path in this
