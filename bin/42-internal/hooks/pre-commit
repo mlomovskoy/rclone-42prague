@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# Generic commit guard: blocks a commit if any line it ADDS matches a regex
+# in $(git rev-parse --git-path info/commit-guard-patterns) -- one pattern
+# per line, blank lines and lines starting with "#" ignored. That file is
+# local-only, same category as .git/info/exclude (lives inside .git/, never
+# tracked, never cloned) -- so what this hook actually blocks is entirely
+# up to whatever that file says, on this machine, for this repo. This
+# script itself knows nothing about what any pattern means; it is generic
+# guard-rail machinery, safe to install as-is in any repo. No patterns file,
+# or an empty one, means no effect.
+#
+# This file lives under bin/42-internal/hooks/ as the tracked SOURCE for
+# the hook -- git never runs a hook from here directly. Install it into a
+# repo by copying it to that repo's own .git/hooks/pre-commit and marking
+# it executable; it is not wired up automatically by anything in this
+# toolkit today.
+#
+# Only lines a commit ADDS are checked, not the whole file -- so removing a
+# flagged reference, or a pattern that already existed before this hook was
+# installed, is never blocked by this on its own.
+set -eu
+
+PATTERNS_FILE="$(git rev-parse --git-path info/commit-guard-patterns)"
+[[ -s "$PATTERNS_FILE" ]] || exit 0
+
+mapfile -t PATTERNS < <(grep -vE '^[[:space:]]*(#|$)' "$PATTERNS_FILE")
+(( ${#PATTERNS[@]} )) || exit 0
+
+added_lines="$(git diff --cached -U0 | grep -E '^\+[^+]' || true)"
+[[ -n "$added_lines" ]] || exit 0
+
+for pat in "${PATTERNS[@]}"; do
+  if grep -qE -- "$pat" <<<"$added_lines"; then
+    echo "Commit blocked: staged changes match a pattern in $PATTERNS_FILE." >&2
+    echo "Review what you're adding, or edit that file if this is a false positive." >&2
+    exit 1
+  fi
+done

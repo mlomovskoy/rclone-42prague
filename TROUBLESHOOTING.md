@@ -636,6 +636,12 @@ clone, not manual repair:
    `.git/info/exclude` is specifically kept syncing via Drive even though
    the rest of `.git/` is excluded for an onboarded repo. If not onboarded,
    or before that next sync runs, re-add the line by hand.
+
+   The same applies to any local git hook you've installed (`.git/hooks/`
+   is never part of a clone either) and whatever local, untracked file it
+   reads its own configuration from — carried back the same way for an
+   onboarded repo whose carve-out list names them, otherwise reinstall by
+   hand.
 4. **Delete every conflict file** (safe now — step 1 already saved anything
    that mattered):
    ```bash
