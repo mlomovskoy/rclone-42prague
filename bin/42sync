@@ -144,16 +144,14 @@ done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/n
 
 # .git/info/exclude and .env.example both need a carve-out from a broader
 # exclude elsewhere (the per-repo .git/** exclude below for the first, the
-# plain .env/.env.* excludes in $FILE_FILTERS for the second) -- but a bare,
-# unanchored "+" rule for either (the shape ADR-0004 originally shipped,
-# and reverted, for .git/info/exclude) makes rclone auto-generate a
-# directory rule allowing descent into EVERY directory, confirmed via
-# `rclone --dump filters` -- checked before $PROJECT_FILTERS's own
-# project-selection catch-all, leaking the target file out of a project
-# excluded from this machine entirely. See
-# design/adr/0004-git-info-exclude-carveout.md and
-# design/open-questions.md #15 for the full incident (found for
-# .git/info/exclude, confirmed to affect .env.example the same way).
+# plain .env/.env.* excludes in $FILE_FILTERS for the second). A bare,
+# unanchored "+" rule for either makes rclone auto-generate a directory
+# rule allowing descent into EVERY directory, confirmed via `rclone --dump
+# filters` -- checked before $PROJECT_FILTERS's own project-selection
+# catch-all, leaking the target file out of a project excluded from this
+# machine entirely. Found and fixed for real once already (a global,
+# unscoped version of the .git/info/exclude rule below shipped, leaked,
+# and got reverted before this scoped version replaced it).
 #
 # Fixed by scoping the carve-out to each CURRENTLY INCLUDED project by
 # name (e.g. "+ /rclone-42prague/**/.git/info/exclude") instead of a bare
@@ -184,15 +182,23 @@ done < <(sed -nE 's#^\+ /([^/]+)/\*\*$#\1#p' "$PROJECT_FILTERS" 2>/dev/null)
 
 # Both filter files, in one place, for every command that must see what this
 # machine actually syncs. NOT used by 'orphans-*' -- see the note on PROJECT_FILTERS.
+#
+# Order here is load-bearing, confirmed with rclone's own --dump filters
+# (twice, the hard way -- see the comments on each piece below) rather than
+# assumed: a bare --exclude/--filter flag is always spliced in BEFORE any
+# --filter-from's rules regardless of where it sits on the command line,
+# but multiple --filter-from FILES do combine in the order given. Both
+# generated-fresh-every-run files (CARVEOUT_FILE, GIT_EXCLUDE_FILE) go
+# first, ahead of the two hand-edited files -- $PROJECT_FILTERS's own
+# blanket "+ /project/**" for an included project is itself a bare-ish
+# catch-all for everything under that project, and first-match-wins means
+# it would swallow the per-repo .git/** exclude below if that exclude were
+# ever positioned after it instead of before.
 FILTER_ARGS=()
 
-# Must be FIRST on the command line: confirmed with rclone's own --dump
-# filters that a bare --exclude/--filter flag is always spliced in BEFORE
-# any --filter-from's rules regardless of where it sits, but multiple
-# --filter-from flags DO combine in command-line order -- so being first
-# here is what lets these carve-outs actually override $FILE_FILTERS's own
-# .env excludes and the per-repo .git/** exclude below, both of which they
-# need to win against.
+# Must be first of the two generated files: it needs to win against both
+# $FILE_FILTERS's own .env excludes AND the per-repo .git/** exclude right
+# below it.
 CARVEOUT_FILE=""
 if (( ${#CARVEOUT_PATTERNS[@]} )); then
   CARVEOUT_FILE="$(mktemp)"
@@ -200,20 +206,22 @@ if (( ${#CARVEOUT_PATTERNS[@]} )); then
   FILTER_ARGS+=(--filter-from "$CARVEOUT_FILE")
 fi
 
-FILTER_ARGS+=(--filter-from "$FILE_FILTERS")
-if grep -qE '^- ' "$PROJECT_FILTERS" 2>/dev/null; then
-  FILTER_ARGS+=(--filter-from "$PROJECT_FILTERS")
-fi
-
-# Also a SEPARATE --filter-from positioned last, for the same reason the
-# carve-out file above must be first: command-line order among multiple
-# --filter-from flags is what's respected, and this one needs to be checked
-# AFTER the carve-out file's own .git/info/exclude rule, not before it.
+# Must come before $PROJECT_FILTERS, not after: found the hard way,
+# confirmed with --dump filters, that placing this last let
+# $PROJECT_FILTERS's own "+ /rclone-42prague/**" match everything under
+# that project first -- including its .git/** -- before this exclude ever
+# got a chance to apply. A real onboarded repo still had its whole .git/**
+# syncing after onboarding until this was caught and fixed.
 GIT_EXCLUDE_FILE=""
 if (( ${#GIT_EXCLUDE_PATTERNS[@]} )); then
   GIT_EXCLUDE_FILE="$(mktemp)"
   printf -- '- %s\n' "${GIT_EXCLUDE_PATTERNS[@]}" > "$GIT_EXCLUDE_FILE"
   FILTER_ARGS+=(--filter-from "$GIT_EXCLUDE_FILE")
+fi
+
+FILTER_ARGS+=(--filter-from "$FILE_FILTERS")
+if grep -qE '^- ' "$PROJECT_FILTERS" 2>/dev/null; then
+  FILTER_ARGS+=(--filter-from "$PROJECT_FILTERS")
 fi
 
 # --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
