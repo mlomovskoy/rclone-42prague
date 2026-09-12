@@ -1,0 +1,18 @@
+# Normalize line endings to LF everywhere, on every platform, overriding
+# whatever core.autocrlf a given machine happens to have -- confirmed the
+# hard way (see TROUBLESHOOTING.md, "A repo's .git got corrupted by a
+# bisync conflict"): Windows' core.autocrlf=true checked these files out
+# (and, it turned out, committed them) with CRLF, while another machine's
+# git checked the exact same commit out with LF. bisync has no concept of
+# git or line endings, only bytes -- it read that difference as a real
+# content conflict and split .git/index, refs, and several tracked files
+# into .conflict1/.conflict2 pairs.
+#
+# This repo is entirely bash scripts, Markdown, and plain text -- none of
+# it benefits from CRLF, and a bash script with a CRLF-terminated shebang
+# line can fail outright on Linux/macOS ("bad interpreter"). `text=auto`
+# still lets git skip normalization for any real binary file added later
+# (detected automatically, no per-extension list to maintain); `eol=lf`
+# makes the checkout line ending an explicit repo policy instead of
+# something every clone's own core.autocrlf decides independently.
+* text=auto eol=lf
