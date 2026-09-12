@@ -45,6 +45,16 @@ secrets/
 *.key
 *.pem
 
+# ---- this toolkit's own generated marker ----
+# Written by `42sync onboard-apply` at an onboarded repo's root (see
+# ADR-0001/0003 in design/, and write_marker() in bin/42sync) -- a
+# regenerable record of that repo's own remotes, never hand-edited. This
+# repo is itself a valid onboarding target (confirmed for real: it already
+# had its own GitHub remote, so onboarding just wrote the marker, no new
+# repo needed) -- ignored here so `git status` stays clean for anyone using
+# this toolkit on its own repo, not just other people's projects.
+.42sync-remote
+
 # ---- logs and temp ----
 *.log
 *.tmp

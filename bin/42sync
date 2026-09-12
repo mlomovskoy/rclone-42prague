@@ -362,18 +362,25 @@ compute_skip_args() {
 # needs following, deeper ones don't). Fills ONBOARD_CANDIDATES (repo paths
 # relative to $LOCAL_PATH that have >=1 remote already, but none owned by
 # the user on github.com, reusing classify_remotes() rather than
-# re-deriving that check) and ONBOARD_SKIPPED_BROKEN (a `.git` that exists
-# but isn't a valid repo -- a real example was found auditing this on a
-# real machine; skipped rather than crashing on it).
+# re-deriving that check), ONBOARD_MARKER_ONLY (a repo that already has an
+# owned github.com remote -- rclone-42prague itself is exactly this case,
+# found the hard way when its own .git suffered a real bisync conflict
+# specifically because it had never gotten a marker -- but has no
+# .42sync-remote marker yet, so it still needs one written to enable the
+# .git/** exclusion; no new repo to create, no push needed), and
+# ONBOARD_SKIPPED_BROKEN (a `.git` that exists but isn't a valid repo -- a
+# real example was found auditing this on a real machine; skipped rather
+# than crashing on it).
 #
 # Deliberately does NOT cross-reference $PROJECT_FILTERS to skip
 # already-excluded projects -- the exact same known, accepted gap
 # check_repos() already has, inherited here rather than fixed as a side
 # effect of unrelated work.
 ONBOARD_CANDIDATES=()
+ONBOARD_MARKER_ONLY=()
 ONBOARD_SKIPPED_BROKEN=()
 scan_onboard_candidates() {
-  ONBOARD_CANDIDATES=(); ONBOARD_SKIPPED_BROKEN=()
+  ONBOARD_CANDIDATES=(); ONBOARD_MARKER_ONLY=(); ONBOARD_SKIPPED_BROKEN=()
   local repo rel
   while IFS= read -r -d '' gitdir; do
     repo="$(dirname "$gitdir")"
@@ -384,7 +391,10 @@ scan_onboard_candidates() {
     fi
     classify_remotes "$repo"
     (( ${#REMOTE_NAMES[@]} == 0 )) && continue  # Scenario A: no remotes, left alone
-    (( ${#REMOTE_PUSH[@]} > 0 )) && continue    # already has an owned github.com remote
+    if (( ${#REMOTE_PUSH[@]} > 0 )); then
+      [[ -f "$repo/$MARKER_FILENAME" ]] || ONBOARD_MARKER_ONLY+=("$rel")
+      continue
+    fi
     ONBOARD_CANDIDATES+=("$rel")
   done < <(find -H "$LOCAL_PATH" -type d -name .git -print0 2>/dev/null)
 }
@@ -874,28 +884,37 @@ EOF
       echo
     fi
 
-    if (( ${#ONBOARD_CANDIDATES[@]} == 0 )); then
+    if (( ${#ONBOARD_CANDIDATES[@]} == 0 && ${#ONBOARD_MARKER_ONLY[@]} == 0 )); then
       logmsg "RESULT: nothing to onboard"
       green "Nothing to onboard -- every repo either has no remote at all (left alone)"
-      echo "or already has a github.com remote you own."
+      echo "or already has a github.com remote you own and a marker."
       exit 0
     fi
 
-    github_owner || die "Could not determine your GitHub login (gh api user failed).
+    if (( ${#ONBOARD_CANDIDATES[@]} )); then
+      github_owner || die "Could not determine your GitHub login (gh api user failed).
 Run 'gh auth login' first -- see the TODO from 42sync_install.sh if you haven't."
 
-    yellow "${#ONBOARD_CANDIDATES[@]} repo(s) need a GitHub repo of their own (account: $GITHUB_OWNER):"
-    for rel in "${ONBOARD_CANDIDATES[@]}"; do
-      name="$(repo_onboard_name "$rel")"
-      printf '  %-55s -> %s/%s\n' "$rel" "$GITHUB_OWNER" "$name"
-    done
-    cat <<'EOF'
+      yellow "${#ONBOARD_CANDIDATES[@]} repo(s) need a GitHub repo of their own (account: $GITHUB_OWNER):"
+      for rel in "${ONBOARD_CANDIDATES[@]}"; do
+        name="$(repo_onboard_name "$rel")"
+        printf '  %-55s -> %s/%s\n' "$rel" "$GITHUB_OWNER" "$name"
+      done
+      cat <<'EOF'
 
 For each: creates a new PRIVATE repo under your GitHub account, adds it as
 remote "github", pushes once to seed it, and writes .42sync-remote recording
 every remote (old and new). Never touches vogsphere or any other existing
 remote.
 EOF
+    fi
+
+    if (( ${#ONBOARD_MARKER_ONLY[@]} )); then
+      echo
+      yellow "${#ONBOARD_MARKER_ONLY[@]} repo(s) already have a github.com remote you own, just need the marker written:"
+      printf '  %s\n' "${ONBOARD_MARKER_ONLY[@]}"
+      echo "No new repo, no push -- just writes .42sync-remote from the remotes already there."
+    fi
 
     if [[ "$MODE" == onboard-check ]]; then
       echo
@@ -904,17 +923,18 @@ EOF
       exit 0
     fi
 
+    total=$(( ${#ONBOARD_CANDIDATES[@]} + ${#ONBOARD_MARKER_ONLY[@]} ))
     if [[ -n "${2:-}" ]]; then
       [[ "$2" == "ONBOARD" ]] || die "Expected ONBOARD as the confirmation argument, got '$2'."
     else
       echo
-      read -r -p "Type ONBOARD to create ${#ONBOARD_CANDIDATES[@]} repo(s) for real: " reply || true
+      read -r -p "Type ONBOARD to apply to $total repo(s) for real: " reply || true
       if [[ "$reply" != "ONBOARD" ]]; then
         logmsg "RESULT: aborted at the confirmation prompt -- nothing was created"
         die "Aborted — nothing was created."
       fi
     fi
-    logmsg "confirmed -- onboarding ${#ONBOARD_CANDIDATES[@]} repo(s)"
+    logmsg "confirmed -- onboarding $total repo(s)"
 
     echo
     failed=0
@@ -937,12 +957,18 @@ EOF
         failed=1
       fi
     done
+    for rel in "${ONBOARD_MARKER_ONLY[@]}"; do
+      repo="$LOCAL_PATH/$rel"
+      logmsg "writing marker only for $rel (already has an owned github.com remote)"
+      write_marker "$repo"
+      green "marker written  $rel"
+    done
     echo
     if (( failed )); then
       logmsg "RESULT: completed with at least one failure or skip"
       yellow "Some repos failed or were skipped -- see above and the log: $LOG"
     else
-      logmsg "RESULT: onboarded ${#ONBOARD_CANDIDATES[@]} repo(s)"
+      logmsg "RESULT: onboarded $total repo(s)"
       green "Onboarding complete."
     fi
     ;;

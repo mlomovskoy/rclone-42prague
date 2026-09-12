@@ -627,6 +627,15 @@ clone, not manual repair:
    rm -rf .git
    cp -r ../repo-name-fresh/.git .git
    ```
+   **This also silently resets `.git/info/exclude` to git's empty default
+   template.** If this repo had a local-only exclude customization there
+   (a private notes folder, anything you deliberately kept off both
+   `.gitignore` and GitHub) it's gone until restored. If this repo is
+   onboarded (has a GitHub remote of its own and a `.42sync-remote`
+   marker), the next `42sync apply`/`check` restores it automatically —
+   `.git/info/exclude` is specifically kept syncing via Drive even though
+   the rest of `.git/` is excluded for an onboarded repo. If not onboarded,
+   or before that next sync runs, re-add the line by hand.
 4. **Delete every conflict file** (safe now — step 1 already saved anything
    that mattered):
    ```bash
