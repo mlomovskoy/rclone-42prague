@@ -487,8 +487,22 @@ repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloa
 # onboarding's own side effect, not regenerated on every regular sync.
 # $MARKER_FILENAME itself is set near the top of this script, alongside
 # FILTER_ARGS, since the per-repo .git/** exclusion below also needs it.
+#
+# Also ensures $MARKER_FILENAME is excluded via .git/info/exclude (local
+# only, never committed -- this is tooling bookkeeping, not something a
+# repo's own tracked .gitignore, visible to anyone who clones it, should
+# have to know about). Not something the repo's own .gitignore can be
+# trusted to happen to cover: found for real onboarding a batch of repos --
+# a "deny everything, allow-list explicitly" .gitignore style (common here)
+# coincidentally caught it, but a repo with an ordinary .gitignore left it
+# showing up as untracked in every future `git status`.
 write_marker() {  # repo-path
-  local repo="$1" name url
+  local repo="$1" name url exclude_file
+  exclude_file="$(git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null)"
+  if [[ -n "$exclude_file" ]]; then
+    mkdir -p "$(dirname "$exclude_file")"
+    grep -qxF -- "$MARKER_FILENAME" "$exclude_file" 2>/dev/null || printf '%s\n' "$MARKER_FILENAME" >> "$exclude_file"
+  fi
   {
     while IFS= read -r name; do
       [[ -n "$name" ]] || continue
