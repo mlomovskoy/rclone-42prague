@@ -1,0 +1,13 @@
+# Repos that are eligible for onboarding (have commits, a github repo would
+# be created successfully) but shouldn't be offered yet -- one path per
+# line, relative to $LOCAL_PATH (the same form onboard-check itself prints,
+# e.g. "42Prague/-2_PiscineMay26/11_C09/00_repo"). Blank lines and lines
+# starting with "#" are ignored.
+#
+# Managed by: 42sync onboard-skip <path> / 42sync onboard-unskip <path>.
+# A skipped repo still shows up in onboard-check's output, under "Skipped --
+# deliberately excluded via onboard-skip" -- visible, not silent.
+#
+# This file is per-machine and is never synced (same "materialize once from
+# the template, then hands off for good" convention as projects-local.txt
+# and carveout-targets.txt).

@@ -18,6 +18,7 @@ VERBS=(
   force-check force-apply
   orphans-check orphans-apply
   onboard-check onboard-apply
+  onboard-skip onboard-unskip
   reconstitute
   resync-check resync-apply
   seed status
@@ -48,6 +49,8 @@ print_verbs() {
 
   onboard-check           preview which repos need a GitHub repo of their own
   onboard-apply [ONBOARD] create them for real: new private repo, remote, one push, marker
+  onboard-skip <path>     stop offering an eligible repo for onboarding, until reversed
+  onboard-unskip <path>   reverse that
 
   reconstitute           list repos with a marker but no local .git, and the clone
                          command to fix each -- never clones automatically
@@ -133,6 +136,13 @@ mkdir -p "$LOG_PATH" "$WORK_PATH" "$(dirname "$FILE_FILTERS")"
 # carved out) is a one-line edit to this file, not to this script.
 CARVEOUT_TARGETS_FILE="$CONFIG_PATH/filters/carveout-targets.txt"
 [[ -f "$CARVEOUT_TARGETS_FILE" ]] || cp "$DEFAULTS_DIR/filters/carveout-targets.txt" "$CARVEOUT_TARGETS_FILE"
+
+# One repo-relative path per line -- onboard candidates eligible for
+# onboarding but not offered yet. Same materialize-once convention as the
+# two files above; read fresh by scan_onboard_candidates() below, never
+# cached.
+ONBOARD_SKIP_FILE="$CONFIG_PATH/filters/onboard-skip.txt"
+[[ -f "$ONBOARD_SKIP_FILE" ]] || cp "$DEFAULTS_DIR/filters/onboard-skip.txt" "$ONBOARD_SKIP_FILE"
 
 # A repo that has this marker at its root (written by onboard-apply) is
 # "onboarded" -- has a GitHub remote of its own, so its .git/** no longer
@@ -297,7 +307,7 @@ trap on_exit EXIT
 # force-check and force-apply logs can never double-match each other's glob.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,reconstitute,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,onboard-skip,onboard-unskip,reconstitute,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -415,13 +425,22 @@ ONBOARD_CANDIDATES=()
 ONBOARD_MARKER_ONLY=()
 ONBOARD_SKIPPED_BROKEN=()
 scan_onboard_candidates() {
-  ONBOARD_CANDIDATES=(); ONBOARD_MARKER_ONLY=(); ONBOARD_SKIPPED_BROKEN=()
+  ONBOARD_CANDIDATES=(); ONBOARD_MARKER_ONLY=(); ONBOARD_SKIPPED_BROKEN=(); ONBOARD_SKIPPED_MANUAL=()
+  # Read fresh every call, not cached -- same "derived state, never trusted
+  # stale" reasoning as GIT_EXCLUDE_PATTERNS above: onboard-skip/
+  # onboard-unskip change what the very next call sees, no restart needed.
+  local manual_skip
+  manual_skip="$(grep -vE '^[[:space:]]*(#|$)' "$ONBOARD_SKIP_FILE" 2>/dev/null)"
   local repo rel
   while IFS= read -r -d '' gitdir; do
     repo="$(dirname "$gitdir")"
     rel="${repo#$LOCAL_PATH/}"
     if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
       ONBOARD_SKIPPED_BROKEN+=("$rel")
+      continue
+    fi
+    if grep -qxF -- "$rel" <<<"$manual_skip"; then
+      ONBOARD_SKIPPED_MANUAL+=("$rel")
       continue
     fi
     classify_remotes "$repo"
@@ -919,6 +938,13 @@ EOF
       echo
     fi
 
+    if (( ${#ONBOARD_SKIPPED_MANUAL[@]} )); then
+      yellow "Skipped -- deliberately excluded via onboard-skip:"
+      printf '  %s\n' "${ONBOARD_SKIPPED_MANUAL[@]}"
+      echo "Reverse with:  42sync onboard-unskip <path>"
+      echo
+    fi
+
     if (( ${#ONBOARD_CANDIDATES[@]} == 0 && ${#ONBOARD_MARKER_ONLY[@]} == 0 )); then
       logmsg "RESULT: nothing to onboard"
       green "Nothing to onboard -- every repo either has no remote at all (left alone)"
@@ -1005,6 +1031,35 @@ EOF
     else
       logmsg "RESULT: onboarded $total repo(s)"
       green "Onboarding complete."
+    fi
+    ;;
+
+  # A repo can be eligible for onboarding (has commits, would
+  # succeed) without being ready to onboard yet -- a declared list, not
+  # detection, same reasoning open questions #1 already settled for group
+  # projects. Mirrors 42projects include/exclude's own shape.
+  onboard-skip)
+    path="${2:?Usage: 42sync onboard-skip <repo-relative-path>}"
+    if grep -qxF -- "$path" "$ONBOARD_SKIP_FILE" 2>/dev/null; then
+      green "Already skipped: $path"
+    else
+      printf '%s\n' "$path" >> "$ONBOARD_SKIP_FILE"
+      logmsg "onboard-skip: $path"
+      green "Will no longer be offered for onboarding: $path"
+    fi
+    echo
+    echo "Reverse with:  42sync onboard-unskip $path"
+    ;;
+
+  onboard-unskip)
+    path="${2:?Usage: 42sync onboard-unskip <repo-relative-path>}"
+    if grep -qxF -- "$path" "$ONBOARD_SKIP_FILE" 2>/dev/null; then
+      tmpf="$(mktemp)"
+      grep -vxF -- "$path" "$ONBOARD_SKIP_FILE" > "$tmpf" && mv "$tmpf" "$ONBOARD_SKIP_FILE"
+      logmsg "onboard-unskip: $path"
+      green "Will be offered for onboarding again: $path"
+    else
+      green "Wasn't skipped: $path"
     fi
     ;;
 
