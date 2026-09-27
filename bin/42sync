@@ -356,10 +356,20 @@ check_repos() {
   # $LOCAL_PATH's junction silently returning zero .git dirs on one run and
   # working normally on others -- an MSYS/NTFS reparse-point quirk, not
   # anything this script's logic controls, so -H makes it robust regardless.
-  local repo dirty ahead rel
+  # Scoped to currently-included projects (open questions #13): an excluded
+  # project's repos are invisible to bisync either way, so a warning about
+  # one is noise that buries the warning that's actually actionable this
+  # run. Recomputed fresh every call rather than cached, same "derived
+  # state, never trusted stale" reasoning as GIT_EXCLUDE_PATTERNS above --
+  # this list changes the moment `42projects include`/`exclude` runs.
+  local included
+  included="$(grep -E '^\+ /' "$PROJECT_FILTERS" 2>/dev/null | sed 's|^+ /||; s|/\*\*$||')"
+  local repo dirty ahead rel top
   while IFS= read -r -d '' gitdir; do
     repo="$(dirname "$gitdir")"
     rel="${repo#$LOCAL_PATH/}"
+    top="${rel%%/*}"
+    grep -qxF -- "$top" <<<"$included" || continue
     dirty="$(git -C "$repo" status --porcelain 2>/dev/null)"
     ahead="$(git -C "$repo" log --oneline '@{u}..HEAD' 2>/dev/null)"
     if [[ -n "$dirty" ]]; then
