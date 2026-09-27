@@ -496,10 +496,22 @@ repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloa
 # a "deny everything, allow-list explicitly" .gitignore style (common here)
 # coincidentally caught it, but a repo with an ordinary .gitignore left it
 # showing up as untracked in every future `git status`.
+#
+# $repo/.git/info/exclude directly, not `git -C "$repo" rev-parse
+# --git-path ...` -- that prints a path relative to $repo's OWN root
+# ("info/exclude"), not to this script's cwd, and every read/write below it
+# runs against whatever directory this script happened to be invoked from,
+# not $repo. Found for real: worked in isolated testing (cwd happened to
+# already be the target repo), silently matched a DIFFERENT
+# already-onboarded repo's exclude file during a real onboard-apply run
+# instead (whichever repo the calling shell's cwd happened to be sitting
+# in at the time) -- no error either way, so the first version of this fix
+# shipped, got committed, and passed its own isolated test while being
+# broken for the actual use case it was written for.
 write_marker() {  # repo-path
   local repo="$1" name url exclude_file
-  exclude_file="$(git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null)"
-  if [[ -n "$exclude_file" ]]; then
+  exclude_file="$repo/.git/info/exclude"
+  if [[ -d "$repo/.git" ]]; then
     mkdir -p "$(dirname "$exclude_file")"
     grep -qxF -- "$MARKER_FILENAME" "$exclude_file" 2>/dev/null || printf '%s\n' "$MARKER_FILENAME" >> "$exclude_file"
   fi
