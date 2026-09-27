@@ -42,8 +42,11 @@ Three habits still matter:
 - **`42sync seed` is for an empty `~/Projects`, not for a new seat.** On a campus
   machine your files are already there — run `42sync check` instead.
 - **Git is your durable copy for code — where you can still push.** Push to vogsphere
-  while you can; access is revoked once a project is evaluated. Drive mirrors `.git`
-  directories whole, but a mirror is not a remote.
+  before you mark the project finished, not just before it's evaluated — access is
+  revoked at submission, and a local-only commit made after that has missed its
+  window. `git log origin/master..HEAD` before marking finished tells you if
+  anything's still unpushed. Drive mirrors `.git` directories whole, but a mirror is
+  not a remote.
   This advice has an exception worth knowing about: see *Repos you can no longer push*
   under Known limitations.
 
@@ -590,18 +593,20 @@ guard will abort. This is correct behaviour; run `42sync force-check` and confir
 dry run shows matched delete/create pairs, then `42sync force-apply`. Reorganize
 *before* a sync, not between syncs, when you can.
 
-**Repos you can no longer push.** vogsphere revokes write access once a project has
-been evaluated:
+**Repos you can no longer push.** vogsphere revokes write access once you mark a
+project finished / submit it for evaluation — not once an evaluation has actually
+run. A fix committed locally after that point has missed its only window to reach
+vogsphere on its own:
 
 ```
 Gitea: Unauthorized — User <login> ... is not authorized to write to vogsphere/...
 ```
 
-Nothing on your side fixes this, and it applies to your own repos as well as
-teammate-owned ones. It inverts the rule at the top of this file: for those repos the
-Drive copy of `.git` is the *only* off-machine copy of that history — which is exactly
-what the next entry says not to rely on. `42sync` prints `unpushed commits: <repo>` so
-you at least know which ones. The way out is a second remote you control:
+It applies to your own repos as well as teammate-owned ones. It inverts the rule at
+the top of this file: for those repos the Drive copy of `.git` is the *only*
+off-machine copy of that history — which is exactly what the next entry says not to
+rely on. `42sync` prints `unpushed commits: <repo>` so you at least know which ones.
+The way out is a second remote you control:
 
 ```bash
 cd ~/Projects/42Prague/repos/<repo>
@@ -611,6 +616,12 @@ git push github --all
 
 Use `--all`, not a file copy. Copying the working tree preserves the code and loses
 every commit, which for a repo whose value is its history is the wrong half.
+
+Vogsphere access itself can come back — staff/Intra can reopen a project (expect
+roughly a 24h wait) — but the repo that returns has a brand new remote URL, a
+different `intra-uuid-...` path. The old one stays dead. See *TROUBLESHOOTING.md*,
+"Unauthorized ... is not authorized to write to vogsphere" for the full recovery
+sequence, including pointing `origin` at the new URL before pushing again.
 
 **Never sync two machines at once.** Sequential is safe. Parallel produces
 `.conflict` files, and inside a `.git` directory that gets unpleasant.

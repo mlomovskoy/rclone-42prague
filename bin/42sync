@@ -336,8 +336,10 @@ genuinely empty and you accept Drive as the source of truth."
 
 # Drive is a mirror, and a mirror has no history. Two things are worth seeing before a
 # run: work not committed at all, and commits that exist only on this machine. The
-# second is the one that bites — vogsphere revokes write access once a project has been
-# evaluated, so "just push it" is not always available. See README, Known limitations.
+# second is the one that bites — vogsphere revokes write access once the project is
+# marked finished, not once it's actually evaluated, so a commit made after that point
+# is already stuck. "Just push it" is not always available. See README, Known
+# limitations.
 #
 # Also fills the global DIRTY_REPOS array with each dirty repo's path relative
 # to $LOCAL_PATH. 'apply'/'check' use this to skip just those repos rather than

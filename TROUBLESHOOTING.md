@@ -328,7 +328,11 @@ bisync is unaffected by any of this: these files were never in its listings.
 Gitea: Unauthorized — User <login> ... is not authorized to write to vogsphere/...
 ```
 
-**Means:** vogsphere revoked write access because the project has been evaluated. It
+**Means:** vogsphere revoked write access. The trigger is marking the project
+**finished** / submitted for evaluation on Intra — not the evaluation actually
+running. A moulinette run or peer eval can KO you on a bug you'd already fixed
+locally but never pushed, and by then it's too late to push the fix: revocation
+already happened at submission, before either evaluation touched the repo. It
 affects your own repos as well as teammate-owned ones, and there is no setting to
 change. This is not an SSH key problem — if the key were wrong you would get a
 permission-denied from ssh, not an authorization message from Gitea.
@@ -336,13 +340,39 @@ permission-denied from ssh, not an authorization message from Gitea.
 **Consequence:** any local commits on that repo cannot leave the machine through git.
 `42sync` reports these as `unpushed commits: <repo>` before each run.
 
-**Fix:** push to a remote you control instead.
+**Before you mark a project finished:** check nothing local is unpushed —
+
+```bash
+cd ~/Projects/42Prague/repos/<repo>
+git log origin/master..HEAD --oneline   # non-empty = commits vogsphere has never seen
+```
+
+A one-line fix sitting only in a local commit is exactly what this revokes your
+only chance to push.
+
+**Fix once already locked out:** push to a remote you control instead.
 
 ```bash
 cd ~/Projects/42Prague/repos/<repo>
 git remote add github git@github.com:<your-github-username>/<repo>-history.git
 git push github --all
 ```
+
+**Getting vogsphere write access back:** possible, not automatic. Request a
+reopen (staff/Intra flow — expect roughly a 24h wait). The repo that comes back
+is **not** the same remote: Intra issues a fresh URL with a new `intra-uuid-...`
+path. The old URL stays dead permanently, so retrying `git push origin master`
+against it fails again with this same error even after the reopen goes through.
+Point `origin` at the new URL first:
+
+```bash
+git remote set-url origin git@vogsphere.42prague.com:vogsphere/intra-uuid-<new>-<login>
+git push origin master
+```
+
+If you kept pushing to `github` in the meantime (see the fix above), that
+history is what you push from here — it's the reason a fix made after lockout
+isn't lost, just stuck until the new remote exists.
 
 `--all` matters. A file-level copy into another folder preserves the working tree and
 discards every commit, which for these repos is the half worth keeping.
