@@ -144,11 +144,11 @@ CARVEOUT_TARGETS_FILE="$CONFIG_PATH/filters/carveout-targets.txt"
 ONBOARD_SKIP_FILE="$CONFIG_PATH/filters/onboard-skip.txt"
 [[ -f "$ONBOARD_SKIP_FILE" ]] || cp "$DEFAULTS_DIR/filters/onboard-skip.txt" "$ONBOARD_SKIP_FILE"
 
-# A repo that has this marker at its root (written by onboard-apply) is
-# "onboarded" -- has a GitHub remote of its own, so its .git/** no longer
-# needs to ride along through bisync whole. Referenced here (for the
-# exclusion below) and by write_marker() further down.
-MARKER_FILENAME=".42sync-remote"
+# MARKER_FILENAME itself now lives in 42-common.sh (42links needs to agree
+# on it too). A repo that has this marker at its root (written by
+# onboard-apply) is "onboarded" -- has a GitHub remote of its own, so its
+# .git/** no longer needs to ride along through bisync whole. Referenced
+# here (for the exclusion below) and by write_marker() further down.
 
 # Every onboarded repo's .git/** gets excluded from bisync, computed fresh
 # from which repos currently have $MARKER_FILENAME rather than persisted
@@ -485,8 +485,8 @@ repo_onboard_name() {  # repo-relative-path, e.g. 42Prague/repos/-1_PiscineReloa
 # with an orphaned pile of files. That reconstitution (consuming this
 # marker on the receiving end) isn't implemented yet -- written here only as
 # onboarding's own side effect, not regenerated on every regular sync.
-# $MARKER_FILENAME itself is set near the top of this script, alongside
-# FILTER_ARGS, since the per-repo .git/** exclusion below also needs it.
+# $MARKER_FILENAME itself comes from 42-common.sh -- shared with 42links now,
+# and still needed here for the per-repo .git/** exclusion above.
 #
 # Also ensures $MARKER_FILENAME is excluded via .git/info/exclude (local
 # only, never committed -- this is tooling bookkeeping, not something a

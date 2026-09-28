@@ -49,6 +49,13 @@ CONFIG_PATH="$HOME_PATH/.config/_projects-sync-rclone"
 FILE_FILTERS="$CONFIG_PATH/filters/projects-filters.txt"
 PROJECT_FILTERS="$CONFIG_PATH/filters/projects-local.txt"
 
+# A repo that has this marker at its root (written by 42sync's
+# onboard-apply) is "onboarded" -- has a GitHub remote of its own. Shared
+# here, not kept private to 42sync, now that 42links also needs to agree on
+# it (to enumerate onboarded repos for its own per-repo symlinks) -- see the
+# comment below on why script-private values stay local instead.
+MARKER_FILENAME=".42sync-remote"
+
 STATE_PATH="$HOME_PATH/.local/state/_projects-sync-rclone"
 LOG_PATH="$STATE_PATH/logs"
 # bisync's listings live here, NOT in ~/.cache -- campus machines clear the

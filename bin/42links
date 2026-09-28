@@ -1,23 +1,40 @@
 #!/usr/bin/env bash
 #
-# 42links — create convenience symlinks to the synced 42 folders. Run with
-# no arguments to see every verb this script accepts.
+# 42links — create convenience symlinks to the synced 42Prague folders. Run
+# with no arguments to see every verb this script accepts.
 #
 # Creates, in $HOME, $HOME/Documents and $HOME/Downloads:
 #
-#   docs   -> ~/Projects/42Prague/docs     (subjects, PDFs, resources)
-#   repos  -> ~/Projects/42Prague/repos    (project repositories)
+#   42_docs/           -> ~/Projects/42Prague/42_docs  (subjects, PDFs, resources --
+#                      hardcoded, unlike 42_repos/ below: there's no marker file
+#                      for this one, so if it's ever renamed again, fix
+#                      DOCS_TARGET below by hand -- `apply`/`check` already
+#                      report it clearly instead of leaving a silently broken
+#                      link, same as a missing $BASE does)
+#   42_repos/<name>     one symlink per onboarded repo under ~/Projects/42Prague --
+#                       "onboarded" meaning it has $MARKER_FILENAME at its root
+#                       (see 42sync), i.e. its own real GitHub remote. Scoped to
+#                       42Prague ONLY: a repo onboarded elsewhere under
+#                       ~/Projects (rclone-42prague itself, another project) is
+#                       deliberately never listed here.
+#
+#   <name> is the repo's own directory name, except school exercises that all
+#   share the generic "00_repo" name -- for those, the parent exercise
+#   folder's name is used instead (e.g. .../04_C02/00_repo -> 42_repos/04_C02).
+#   If two onboarded repos would still collide on the same name, that name is
+#   skipped entirely (nothing silently overwritten) and reported.
 #
 # These live in $HOME, which on a campus machine is a per-user volume that follows
 # you between seats — so this is once per home volume, not once per seat.
 
 set -euo pipefail
-
-# link name -> target under $BASE
-LINK_NAMES=(docs repos)
+shopt -s nullglob
 
 # where to place them
 DIRS=("$HOME" "$HOME/Documents" "$HOME/Downloads")
+
+DOCS_LINK_NAME="42_docs"
+REPOS_DIR_NAME="42_repos"
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; logmsg "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; logmsg "$*"; }
@@ -47,6 +64,41 @@ make_link() {  # target link -> sets LINK_MANAGED=1 if -L will recognize it, els
   fi
   LINK_MANAGED=0
   ln -sfn "$target" "$link"
+}
+
+# Single symlink create/refresh, shared by the plain 42_docs link and every
+# per-repo link inside 42_repos/ -- same rules either way: leave a real
+# file/dir alone, repoint a stale link, create a missing one.
+sync_one_link() {  # target link
+  local target="$1" link="$2" current
+  if [[ -L "$link" ]]; then
+    current="$(readlink "$link")"
+    if [[ "$current" == "$target" ]]; then
+      green "ok       $link"
+    else
+      if [[ $DRY -eq 1 ]]; then
+        green "repoint  $link  (was -> $current)"
+      else
+        make_link "$target" "$link"
+        green "repoint  $link  (was -> $current)"
+      fi
+    fi
+  elif [[ -e "$link" ]]; then
+    yellow "SKIPPED  $link  (exists and is not a symlink — left untouched)"
+  else
+    if [[ $DRY -eq 1 ]]; then
+      green "created  $link"
+    else
+      make_link "$target" "$link"
+      if (( LINK_MANAGED )); then
+        green "created  $link"
+      else
+        yellow "created  $link  (as a working link this OS wouldn't let bash create as a
+     real symlink -- it works, but this script cannot manage it again;
+     see TROUBLESHOOTING.md)"
+      fi
+    fi
+  fi
 }
 
 VERBS=(apply check clean-check clean-apply status)
@@ -79,16 +131,17 @@ valid=0
 for v in "${VERBS[@]}"; do [[ "$MODE" == "$v" ]] && valid=1 && break; done
 (( valid )) || { printf '\033[31mUnknown verb '"'"'%s'"'"'. Run '"'"'42links'"'"' with no arguments to see the list.\033[0m\n' "$MODE" >&2; exit 1; }
 
-# LOG_PATH, KEEP_LOGS, and LOCAL_PATH (aliased below as SYNC_ROOT, this script's
-# own established name for it) come from here -- shared with every other
-# 42* script. Sourced only now, after the no-args/__complete/unknown-verb
-# checks above: this file has a side effect (creating
+# LOG_PATH, KEEP_LOGS, LOCAL_PATH (aliased below as SYNC_ROOT, this script's
+# own established name for it), and MARKER_FILENAME come from here -- shared
+# with every other 42* script. Sourced only now, after the no-args/__complete/
+# unknown-verb checks above: this file has a side effect (creating
 # $CONFIG_PATH/42-common.local.sh if missing), and a purely informational
 # query must never trigger it. Confirmed empirically: it used to.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/42-internal/lib/42-common.sh"
 
 SYNC_ROOT="$LOCAL_PATH"
 BASE="$SYNC_ROOT/42Prague"
+DOCS_TARGET="$BASE/42_docs"
 # Compared below against destinations resolved with `pwd -P`. Resolve this one too:
 # if any component of $HOME is itself a symlink, an unresolved value here would fail
 # to match and the guard would silently pass.
@@ -128,51 +181,84 @@ for d in "${DIRS[@]}"; do
   esac
 done
 
+# Onboarded repos under $BASE only -- deliberately `find -H "$BASE" ...`, not
+# $SYNC_ROOT: rclone-42prague itself (and any other project that ever lands
+# under ~/Projects) has its own marker but is NOT a 42Prague repo, and must
+# never show up in 42_repos/. Fills REPO_TARGETS[name]=path; a name two
+# repos would both claim is dropped from it and reported instead, never
+# silently pointed at whichever one was found last.
+declare -A REPO_TARGETS=()
+collect_repo_targets() {
+  local marker repo_dir name seen_twice=()
+  while IFS= read -r -d '' marker; do
+    repo_dir="$(dirname "$marker")"
+    name="$(basename "$repo_dir")"
+    [[ "$name" != "00_repo" ]] || name="$(basename "$(dirname "$repo_dir")")"
+    if [[ -n "${REPO_TARGETS[$name]:-}" ]]; then
+      seen_twice+=("$name")
+    else
+      REPO_TARGETS["$name"]="$repo_dir"
+    fi
+  done < <(find -H "$BASE" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
+  for name in "${seen_twice[@]}"; do
+    yellow "SKIPPED  $REPOS_DIR_NAME/$name  (two onboarded repos under $BASE both resolve to this name -- rename one, or fix the naming rule above, then re-run)"
+    unset 'REPO_TARGETS[$name]'
+  done
+}
+
 case "$MODE" in
 
   apply)
     [[ -d "$BASE" ]] || die "Target missing: $BASE
 Run '42sync seed' first, or fix BASE at the top of this script."
 
-    for name in "${LINK_NAMES[@]}"; do
-      target="$BASE/$name"
-      if [[ ! -d "$target" ]]; then
-        yellow "skip     $name  (no such directory: $target)"
-        continue
-      fi
+    if [[ -d "$DOCS_TARGET" ]]; then
       for d in "${DIRS[@]}"; do
         [[ $DRY -eq 1 ]] || mkdir -p "$d"
-        link="$d/$name"
-        if [[ -L "$link" ]]; then
-          current="$(readlink "$link")"
-          if [[ "$current" == "$target" ]]; then
-            green "ok       $link"
-          else
-            if [[ $DRY -eq 1 ]]; then
-              green "repoint  $link  (was -> $current)"
-            else
-              make_link "$target" "$link"
-              green "repoint  $link  (was -> $current)"
-            fi
-          fi
-        elif [[ -e "$link" ]]; then
-          yellow "SKIPPED  $link  (exists and is not a symlink — left untouched)"
+        sync_one_link "$DOCS_TARGET" "$d/$DOCS_LINK_NAME"
+      done
+    else
+      yellow "skip     $DOCS_LINK_NAME  (no such directory: $DOCS_TARGET)"
+    fi
+
+    collect_repo_targets
+    for d in "${DIRS[@]}"; do
+      repos_dir="$d/$REPOS_DIR_NAME"
+      if [[ -e "$repos_dir" && ! -d "$repos_dir" ]]; then
+        yellow "SKIPPED  $repos_dir  (exists and is not a directory — left untouched)"
+        continue
+      fi
+      [[ $DRY -eq 1 ]] || mkdir -p "$repos_dir"
+
+      for name in "${!REPO_TARGETS[@]}"; do
+        sync_one_link "${REPO_TARGETS[$name]}" "$repos_dir/$name"
+      done
+
+      # Prune: a link this script owns (points under $BASE) whose repo is no
+      # longer onboarded/present. Never touches anything pointing elsewhere.
+      [[ -d "$repos_dir" ]] || continue
+      for existing in "$repos_dir"/*; do
+        ename="$(basename "$existing")"
+        [[ -n "${REPO_TARGETS[$ename]:-}" ]] && continue
+        if [[ -L "$existing" ]]; then
+          current="$(readlink "$existing")"
+          case "$current" in
+            "$BASE"/*|"$BASE")
+              if [[ $DRY -eq 1 ]]; then
+                yellow "would remove  $existing  (-> $current, no longer onboarded)"
+              else
+                rm "$existing"; yellow "removed  $existing  (-> $current, no longer onboarded)"
+              fi
+              ;;
+            *)
+              yellow "kept     $existing  (points outside $BASE -> $current)" ;;
+          esac
         else
-          if [[ $DRY -eq 1 ]]; then
-            green "created  $link"
-          else
-            make_link "$target" "$link"
-            if (( LINK_MANAGED )); then
-              green "created  $link"
-            else
-              yellow "created  $link  (as a working link this OS wouldn't let bash create as a
-           real symlink -- it works, but this script cannot manage it again;
-           see TROUBLESHOOTING.md)"
-            fi
-          fi
+          yellow "kept     $existing  (not a symlink this script manages — left untouched)"
         fi
       done
     done
+
     # Not `[[ ... ]] && yellow`: on a real run the test fails, that status becomes
     # the case statement's, and the script exits 1 despite having done its job.
     if [[ $DRY -eq 1 ]]; then
@@ -182,24 +268,50 @@ Dry run — nothing was changed. Run 'apply' once it looks right."
     ;;
 
   clean-apply)
-    for name in "${LINK_NAMES[@]}"; do
-      for d in "${DIRS[@]}"; do
-        link="$d/$name"
-        if [[ -L "$link" ]]; then
-          current="$(readlink "$link")"
+    for d in "${DIRS[@]}"; do
+      link="$d/$DOCS_LINK_NAME"
+      if [[ -L "$link" ]]; then
+        current="$(readlink "$link")"
+        case "$current" in
+          "$BASE"/*|"$BASE")
+            if [[ $DRY -eq 1 ]]; then
+              yellow "would remove  $link  (-> $current)"
+            else
+              rm "$link"; green "removed  $link"
+            fi
+            ;;
+          *)
+            yellow "kept     $link  (points outside $BASE -> $current)" ;;
+        esac
+      fi
+
+      repos_dir="$d/$REPOS_DIR_NAME"
+      [[ -d "$repos_dir" ]] || continue
+      remaining=0
+      for existing in "$repos_dir"/*; do
+        if [[ -L "$existing" ]]; then
+          current="$(readlink "$existing")"
           case "$current" in
             "$BASE"/*|"$BASE")
               if [[ $DRY -eq 1 ]]; then
-                yellow "would remove  $link  (-> $current)"
+                yellow "would remove  $existing  (-> $current)"
               else
-                rm "$link"; green "removed  $link"
+                rm "$existing"; green "removed  $existing"
               fi
               ;;
             *)
-              yellow "kept     $link  (points outside $BASE -> $current)" ;;
+              yellow "kept     $existing  (points outside $BASE -> $current)"
+              remaining=1
+              ;;
           esac
+        else
+          yellow "kept     $existing  (not a symlink this script manages — left untouched)"
+          remaining=1
         fi
       done
+      if [[ $DRY -eq 0 && $remaining -eq 0 ]]; then
+        rmdir "$repos_dir" 2>/dev/null && green "removed  $repos_dir  (now empty)"
+      fi
     done
     if [[ $DRY -eq 1 ]]; then
       yellow "
@@ -211,21 +323,45 @@ Dry run — nothing was changed. Run 'clean-apply' once it looks right."
     echo "Base: $BASE"
     [[ -d "$BASE" ]] || yellow "  (missing)"
     echo
-    for name in "${LINK_NAMES[@]}"; do
-      for d in "${DIRS[@]}"; do
-        link="$d/$name"
-        if [[ -L "$link" ]]; then
-          if [[ -e "$link" ]]; then
-            green   "ok       $link -> $(readlink "$link")"
-          else
-            red     "BROKEN   $link -> $(readlink "$link")"
-          fi
-        elif [[ -e "$link" ]]; then
-          yellow    "real dir $link  (not a symlink)"
+
+    for d in "${DIRS[@]}"; do
+      link="$d/$DOCS_LINK_NAME"
+      if [[ -L "$link" ]]; then
+        if [[ -e "$link" ]]; then
+          green   "ok       $link -> $(readlink "$link")"
         else
-          echo      "absent   $link"
+          red     "BROKEN   $link -> $(readlink "$link")"
         fi
-      done
+      elif [[ -e "$link" ]]; then
+        yellow    "real dir $link  (not a symlink)"
+      else
+        echo      "absent   $link"
+      fi
+    done
+
+    echo
+    for d in "${DIRS[@]}"; do
+      repos_dir="$d/$REPOS_DIR_NAME"
+      if [[ -L "$repos_dir" ]]; then
+        yellow "real link $repos_dir  (expected a plain directory, not a symlink)"
+      elif [[ -d "$repos_dir" ]]; then
+        echo "$repos_dir/"
+        for existing in "$repos_dir"/*; do
+          if [[ -L "$existing" ]]; then
+            if [[ -e "$existing" ]]; then
+              green "  ok       $(basename "$existing") -> $(readlink "$existing")"
+            else
+              red   "  BROKEN   $(basename "$existing") -> $(readlink "$existing")"
+            fi
+          else
+            yellow  "  real     $(basename "$existing")  (not a symlink)"
+          fi
+        done
+      elif [[ -e "$repos_dir" ]]; then
+        yellow    "real file $repos_dir  (not a directory)"
+      else
+        echo      "absent   $repos_dir"
+      fi
     done
     ;;
 
