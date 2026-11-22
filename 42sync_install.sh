@@ -135,6 +135,10 @@ source "$REPO_BINDIR/42-internal/lib/42-common.sh"
 # just call these. See that file for what they touch and why.
 source "$REPO_BINDIR/42-internal/lib/42-configure.sh"
 
+# meta_repo_commit() -- stamp_version() below uses it so an installed copy
+# records which commit it came from (with "+dirty" for an uncommitted tree).
+source "$REPO_BINDIR/42-internal/lib/42-meta.sh"
+
 # ensure_line() -- setup_shell() below uses this to write the PATH and
 # tab-completion lines. Shared with 42password, which uses it for
 # RCLONE_PASSWORD_COMMAND -- same "replace the old value instead of
@@ -672,6 +676,36 @@ install_aux_file() {  # rel-path (relative to both $REPO_BINDIR and $BIN_PATH)
   fi
 }
 
+# Writes $BIN_PATH/42-internal/VERSION: the three values every published
+# machine heartbeat carries, so two machines (and a later reader of an old
+# heartbeat) can tell exactly which tool did the work. tool_version comes
+# from the one-line VERSION file at the repo root; tool_commit from git
+# ("unknown" if this isn't a clone, "+dirty" if the tree has edits);
+# proto is the heartbeat/message format number, which only changes when an
+# older reader would misread newer data -- not on every release.
+stamp_version() {
+  local dst="$BIN_PATH/42-internal/VERSION" ver commit tmp
+  ver="$(sed -nE 's/^([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "$SRC/VERSION" 2>/dev/null | head -n 1)"
+  if [[ -z "$ver" ]]; then
+    yellow "skip       VERSION stamp: no valid x.y.z in $SRC/VERSION"
+    return 0
+  fi
+  commit="unknown"
+  [[ -e "$SRC/.git" ]] && commit="$(meta_repo_commit "$SRC")"
+  tmp="$(mktemp)"
+  printf 'tool_version=%s\ntool_commit=%s\nproto=%s\n' "$ver" "$commit" "$META_PROTO" > "$tmp"
+  if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then
+    green "ok         VERSION stamp already current ($ver, $commit)"
+  elif (( DRY )); then
+    yellow "would write VERSION stamp $ver ($commit) to ${BIN_PATH/#$HOME/\~}/42-internal/VERSION"
+  else
+    mkdir -p "$(dirname "$dst")"
+    cp "$tmp" "$dst"
+    green "installed  VERSION stamp $ver ($commit)"
+  fi
+  rm -f "$tmp"
+}
+
 install_scripts() {
   local name
 
@@ -717,6 +751,8 @@ install_scripts() {
     install_file "$REPO_BINDIR/$name" "$BIN_PATH/$name"
     green "installed  $name -> ${BIN_PATH/#$HOME/\~}/$name"
   done
+
+  stamp_version
 }
 
 # ---------------------------------------------------------------- shell rc ---

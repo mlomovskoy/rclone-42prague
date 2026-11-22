@@ -63,6 +63,9 @@ TROUBLESHOOTING.md           every error hit during setup, and the fix
                               setting per-machine overrides before ever
                               installing anything -- see Configuration,
                               Reconfiguring a single machine
+VERSION                      the tool version (x.y.z), bumped by hand with
+                              each behaviour change; 42sync_install.sh stamps
+                              it, with the commit, into ~/bin/42-internal/
 rclone-release-key.asc       rclone's release signing key -- read directly by
                               42sync_install.sh during its own rclone-download
                               check, never copied into ~/bin, so it stays at
@@ -368,7 +371,9 @@ it exists to prevent a half-populated folder from being taken as the truth.
 42sync apply           # two-way sync -- sitting down, and before leaving
 42sync check           # dry run of apply, changes nothing
 42sync verify          # compare real content: is everything local actually on Drive?
-42sync status          # local size, remote size, last run
+42sync status          # local size, remote size, last run, other machines
+42sync status --all    # every machine that has reported: tool version, last sync, layout
+42sync note "text"     # leave a short notice for your other machines
 42sync force-check     # preview pushing a directory rename through the delete guard
 42sync force-apply     # apply it for real (asks first, unless given the FORCE argument)
 42sync orphans-check   # list excluded files stranded on Drive -- deletes nothing
@@ -524,6 +529,51 @@ the `drive.file` scope no rclone command can remove it.
 Filters: `~/.config/_projects-sync-rclone/filters/projects-filters.txt` (artifact excludes: `*.o`, `*.out`,
 caches, Claude Code's `.claude/` runtime state — shared intent on every machine,
 created on first run, yours to edit)
+
+### Knowing what your other machines are doing
+
+Every `42sync` run that touches Drive (`apply`, `check`, `status`, `seed`, ...)
+ends by publishing a small **heartbeat** for this machine and reading everyone
+else's. `42sync status --all` shows the result:
+
+```
+MACHINE   ID        OS     TOOL                  LAST RUN        LAST SYNC  LAYOUT
+laptop*   34268d70  darwin 1.1.0 (e586083)       status ok 2m    3d         same
+campus    8e98922f  linux  1.0.0 (a1b2c3d)         apply ok 41d    41d        DIFFERS  outdated STALE
+```
+
+- **LAST RUN** is the last verb this machine ran and how it ended (`ok`,
+  `failed`, `guard-aborted`). **LAST SYNC** is the last *successful* real sync
+  (`apply`, `dirty-apply`, `force-apply`, `resync-apply`, `seed`) -- a dry run
+  or `status` never moves it.
+- **LAYOUT** compares the folder names (two levels deep, not inside repos)
+  with this machine's. `DIFFERS` after a rename is the usual reason a sync
+  trips the delete guard: one machine renamed folders, the other hasn't yet.
+  A machine that notices its own layout changed also leaves a `layout-changed`
+  notice naming what was added and removed.
+- **outdated** means another machine reports a newer tool version than this
+  one; **STALE** means a machine hasn't run `42sync` in 14 days. A machine
+  that has never been upgraded to this version simply doesn't appear.
+- Each install records its tool version, the commit it was installed from and a
+  protocol number at install time (`~/bin/42-internal/VERSION`). A machine
+  speaking a newer protocol than yours is shown as such, not guessed at.
+
+`42sync note "text"` leaves a free-text notice; other machines print it, once,
+the next time they run `42sync`. Notices are only ever displayed -- nothing in
+one is executed.
+
+Where it lives: the heartbeat and notices go to `gdrive:_projects-sync-rclone.meta`,
+a **sibling** of the synced folder, never inside it, so no sync can pull them
+into a working tree or count them in its delete guard. Locally they are under
+`~/.local/state/_projects-sync-rclone/machine/`. Each machine writes only its
+own directory there, so they cannot conflict. If Drive is unreachable the sync
+still runs and keeps its own exit status; the heartbeat is just retried next
+run. To turn it off on one machine: `42sync configure-set meta-enabled 0`.
+To rename how a machine appears: `42sync configure-set machine-label laptop`.
+
+Not yet tested on Windows (Git Bash / WSL). The new code avoids bash-4-only
+features so it should run on macOS's stock bash, but that too has only been
+checked on Linux so far.
 
 ### Logs
 

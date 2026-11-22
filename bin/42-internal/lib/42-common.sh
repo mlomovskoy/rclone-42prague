@@ -66,6 +66,14 @@ KEEP_LOGS=20
 
 BIN_PATH="$HOME_PATH/bin"
 
+# Machine heartbeat + notices (see 42-meta.sh). Set META_ENABLED=0 on a
+# machine to stop publishing and reading entirely. MACHINE_LABEL is the
+# human-readable name other machines see for this one; empty means the
+# short hostname. It is a label only -- the machine's real identity is a
+# random id, so renaming it is always safe.
+META_ENABLED=1
+MACHINE_LABEL=""
+
 # HELPERS_DIR is wherever THIS file's own directory's parent landed -- a
 # sibling-of-siblings anchor, so DEFAULTS_DIR/WIN_DIR/etc. below all resolve
 # correctly in both layouts without any script needing to work it out
@@ -108,3 +116,11 @@ OVERRIDES_PATH="$CONFIG_PATH/42-common.local.sh"
 mkdir -p "$(dirname "$OVERRIDES_PATH")"
 [[ -f "$OVERRIDES_PATH" ]] || cp "$DEFAULTS_DIR/42-common.local.sh" "$OVERRIDES_PATH"
 source "$OVERRIDES_PATH"
+
+# Derived AFTER the override file above, so a machine that overrides
+# REMOTE_PATH or STATE_PATH gets matching metadata locations for free.
+# META_REMOTE_PATH is a SIBLING of REMOTE_PATH, not a child: bisync only
+# ever lists REMOTE_PATH, so an install with older filters can never pull
+# machine metadata into a working tree or count it in its delete guard.
+: "${META_REMOTE_PATH:=$REMOTE_PATH.meta}"
+: "${META_LOCAL_PATH:=$STATE_PATH/machine}"

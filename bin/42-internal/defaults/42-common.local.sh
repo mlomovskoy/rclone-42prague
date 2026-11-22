@@ -18,3 +18,6 @@
 # KEEP_LOGS=20
 
 # BIN_PATH="$HOME_PATH/bin"
+
+# META_ENABLED=1        # 0 = never publish or read machine heartbeats/notices
+# MACHINE_LABEL=""      # name other machines see for this one; empty = short hostname

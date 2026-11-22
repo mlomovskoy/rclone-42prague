@@ -2,6 +2,32 @@
 
 Notable changes, newest first. Commit hashes are short and stable within this repo.
 
+## 1.1.0 -- Machine heartbeat and notices (2026-11-22)
+
+Releases before this one predate version numbers and are understood as 1.0.0.
+The repo-root `VERSION` file is now the source of truth for the number;
+bump it in the same commit as the change it describes (minor for features,
+patch for fixes).
+
+- **`42sync status --all`**: every machine that has run this version, with its
+  tool version, last run and result, last successful sync, and whether its
+  folder layout matches this one. Flags `outdated` installs and `STALE`
+  machines (nothing heard for 14 days).
+- **Heartbeat on every Drive-touching verb**, including failed and
+  guard-aborted runs. Published to `gdrive:_projects-sync-rclone.meta` -- a
+  sibling of the synced folder, so older installs and bisync never see it.
+  A failure to publish or read never changes the verb's own exit status.
+- **Notices between machines**: `42sync note "text"`, plus automatic
+  `layout-changed`, `tool-upgraded` and `guard-aborted` notices. Displayed
+  once on the receiving machine, which writes an acknowledgement. Never
+  executed; control characters are stripped before printing.
+- **Version stamp**: `42sync_install.sh` writes tool version, source commit
+  (with `+dirty` for uncommitted trees) and protocol number to
+  `~/bin/42-internal/VERSION`.
+- New settings: `meta-enabled`, `machine-label` (`42sync configure-set`).
+- A machine that hasn't been upgraded does not report; it appears only after
+  one manual `git pull && ./42sync_install.sh apply`.
+
 ## Restructuring, per-machine config, and hardening (2026-09-06)
 
 ### Structure

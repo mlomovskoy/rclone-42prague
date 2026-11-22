@@ -21,7 +21,7 @@ VERBS=(
   onboard-skip onboard-unskip
   reconstitute
   resync-check resync-apply
-  seed status
+  seed status note
   configure-set configure-reset configure-show
 )
 
@@ -59,7 +59,10 @@ print_verbs() {
   resync-apply [RESYNC]  apply it for real
 
   seed                   ~/Projects is empty: pull from Drive, then set the baseline
-  status                 local size, remote size, recent runs
+  status                 local size, remote size, recent runs, other machines
+  status --all           every machine that has reported: tool version, last run,
+                         last successful sync, whether its folder layout matches
+  note "<text>"          leave a short notice for your other machines to see
 
   configure-set <name> <value>  set a per-machine override, e.g.:
                                    42sync configure-set keep-logs 50
@@ -105,6 +108,9 @@ source "$LIBDIR/42-common.sh"
 # configure_set/configure_reset/configure_show -- the configure-* verbs below
 # just call these. See that file for what they touch and why.
 source "$LIBDIR/42-configure.sh"
+
+# Machine heartbeat, tool-version stamp and notices -- see that file.
+source "$LIBDIR/42-meta.sh"
 
 # classify_remotes()/github_owner() -- onboard-check/onboard-apply below use
 # these to decide which repos need a GitHub repo of their own and to check
@@ -293,9 +299,14 @@ logmsg "=== 42sync $MODE $(date '+%F %T') host=$(uname -n) ==="
 # Rotation happens here too: every mode that writes a log also rotates, including
 # the ones that run no rclone at all, so pruning cannot live in the sync paths only.
 on_exit() {
+  local rc=$?
   [[ -n "$GIT_EXCLUDE_FILE" && -f "$GIT_EXCLUDE_FILE" ]] && rm -f "$GIT_EXCLUDE_FILE"
   [[ -n "$CARVEOUT_FILE" && -f "$CARVEOUT_FILE" ]] && rm -f "$CARVEOUT_FILE"
   prune_logs
+  # Publish this machine's heartbeat and read the others'. Needs the verb's
+  # real exit status ($rc, captured first thing above) so a failed or
+  # guard-aborted run is what gets reported. Never alters that status.
+  meta_on_exit "$MODE" "$rc" || true
   printf '\033[32mLog: %s\033[0m\n' "$LOG"
 }
 trap on_exit EXIT
@@ -307,7 +318,7 @@ trap on_exit EXIT
 # force-check and force-apply logs can never double-match each other's glob.
 prune_logs() {
   local keep
-  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,onboard-skip,onboard-unskip,reconstitute,resync-check,resync-apply,seed,status}-*.log 2>/dev/null)
+  keep=$(ls -1t "$LOG_PATH"/42sync-{apply,check,dirty-apply,dirty-check,verify,force-check,force-apply,orphans-check,orphans-apply,onboard-check,onboard-apply,onboard-skip,onboard-unskip,reconstitute,resync-check,resync-apply,seed,status,note}-*.log 2>/dev/null)
   [[ -n "$keep" ]] || return 0
   printf '%s\n' "$keep" | tail -n +$((KEEP_LOGS+1)) | xargs -r rm --
 }
@@ -1151,7 +1162,24 @@ EOF
     fi
     ;;
 
+  note)
+    [[ $# -eq 2 && -n "$2" ]] || die "Usage: 42sync note \"<text>\""
+    (( META_ENABLED )) || die "Machine notices are turned off on this machine (META_ENABLED=0)."
+    meta_load_version
+    mkdir -p "$META_LOCAL_PATH"
+    meta_note "$2"
+    green "Noted. Other machines will see it the next time they run 42sync."
+    ;;
+
   status)
+    meta_load_version
+    META_REPORT=footer
+    if [[ "${2:-}" == "--all" ]]; then
+      (( META_ENABLED )) || die "Machine notices are turned off on this machine (META_ENABLED=0)."
+      META_REPORT=table
+    elif [[ -n "${2:-}" ]]; then
+      die "Unknown argument '$2'. Usage: 42sync status [--all]"
+    fi
     echo "Local:  $LOCAL_PATH"
     du -sh "$LOCAL_PATH" 2>/dev/null || echo "  (does not exist yet — run: 42sync seed)"
     [[ -f "$LOCAL_PATH/RCLONE_TEST" ]] && green "  access marker present" || yellow "  access marker MISSING"

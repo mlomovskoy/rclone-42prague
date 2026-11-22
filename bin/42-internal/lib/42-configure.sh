@@ -13,7 +13,7 @@
 # bin/42-internal/defaults/42-common.local.sh if either changes. LOG_PATH/
 # WORK_PATH are deliberately absent -- both are always derived from
 # STATE_PATH, never independently configurable.
-CONFIGURE_NAMES=(local-path remote-path config-path state-path keep-logs bin-path file-filters project-filters)
+CONFIGURE_NAMES=(local-path remote-path config-path state-path keep-logs bin-path file-filters project-filters meta-enabled machine-label)
 
 configure_to_var() { tr 'a-z-' 'A-Z_' <<<"$1"; }  # local-path -> LOCAL_PATH
 
