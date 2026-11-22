@@ -161,11 +161,37 @@ ONBOARD_SKIP_FILE="$CONFIG_PATH/filters/onboard-skip.txt"
 # into $FILE_FILTERS -- so this can never go stale independently of the
 # markers themselves, and never needs its own "regenerate on onboarding"
 # step. A repo with no marker yet keeps syncing .git/ the old way.
+#
+# ...plus every repo path that EVER had a marker, remembered in
+# $ONBOARDED_STATE. Needed because the exclusion is keyed to the marker's
+# current location: rename or delete an onboarded repo and its old path
+# stops being excluded, while Drive still holds that path's old .git
+# (excluded, so never in bisync's listings and never cleaned up) -- which
+# bisync then reads as "new on Path2" and pulls down into a stale repo at
+# the old path. Found for real in a test run. Seeded from the markers in the
+# last bisync listing too, so a rename made before this state file existed
+# is still caught. Trade-off: a NON-onboarded repo later created at a
+# formerly onboarded path won't sync its .git until it's onboarded too.
+ONBOARDED_STATE="$WORK_PATH/onboarded-repos.txt"
+ONBOARDED_REPOS=()
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] && ONBOARDED_REPOS+=("$rel")
+done < <(
+  {
+    find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print 2>/dev/null \
+      | while IFS= read -r marker; do d="$(dirname "$marker")"; printf '%s\n' "${d#$LOCAL_PATH/}"; done
+    cat "$ONBOARDED_STATE" 2>/dev/null
+    cat "$WORK_PATH"/*.path1.lst "$WORK_PATH"/*.path2.lst 2>/dev/null \
+      | sed -nE "s#^.* \"(.*)/\\$MARKER_FILENAME\"\$#\\1#p"
+  } | sort -u
+)
+if [[ -d "$WORK_PATH" ]] && (( ${#ONBOARDED_REPOS[@]} )); then
+  printf '%s\n' "${ONBOARDED_REPOS[@]}" > "$ONBOARDED_STATE"
+fi
 GIT_EXCLUDE_PATTERNS=()
-while IFS= read -r -d '' marker; do
-  onboarded_repo="$(dirname "$marker")"
-  GIT_EXCLUDE_PATTERNS+=("/${onboarded_repo#$LOCAL_PATH/}/.git/**")
-done < <(find -H "$LOCAL_PATH" -type f -name "$MARKER_FILENAME" -print0 2>/dev/null)
+for rel in ${ONBOARDED_REPOS[@]+"${ONBOARDED_REPOS[@]}"}; do
+  GIT_EXCLUDE_PATTERNS+=("/$rel/.git/**")
+done
 
 # Each target in $CARVEOUT_TARGETS_FILE (.git/info/exclude and .env.example,
 # by default -- the two confirmed real cases) needs a carve-out from a
@@ -205,7 +231,7 @@ done < "$CARVEOUT_TARGETS_FILE"
 CARVEOUT_PATTERNS=()
 while IFS= read -r project; do
   [[ -n "$project" ]] || continue
-  for target in "${CARVEOUT_TARGETS[@]}"; do
+  for target in ${CARVEOUT_TARGETS[@]+"${CARVEOUT_TARGETS[@]}"}; do
     CARVEOUT_PATTERNS+=("/${project}/${target}")
     CARVEOUT_PATTERNS+=("/${project}/**/${target}")
   done
@@ -227,27 +253,38 @@ done < <(sed -nE 's#^\+ /([^/]+)/\*\*$#\1#p' "$PROJECT_FILTERS" 2>/dev/null)
 # ever positioned after it instead of before.
 FILTER_ARGS=()
 
-# Must be first of the two generated files: it needs to win against both
-# $FILE_FILTERS's own .env excludes AND the per-repo .git/** exclude right
-# below it.
-CARVEOUT_FILE=""
-if (( ${#CARVEOUT_PATTERNS[@]} )); then
-  CARVEOUT_FILE="$(mktemp)"
-  printf -- '+ %s\n' "${CARVEOUT_PATTERNS[@]}" > "$CARVEOUT_FILE"
-  FILTER_ARGS+=(--filter-from "$CARVEOUT_FILE")
-fi
-
 # Must come before $PROJECT_FILTERS, not after: found the hard way,
 # confirmed with --dump filters, that placing this last let
 # $PROJECT_FILTERS's own "+ /rclone-42prague/**" match everything under
 # that project first -- including its .git/** -- before this exclude ever
 # got a chance to apply. A real onboarded repo still had its whole .git/**
 # syncing after onboarding until this was caught and fixed.
+#
+# And before $CARVEOUT_FILE too, with each repo's own .git/info/exclude
+# carve-out right above its .git/** exclude. The carve-out file's broad
+# "+ /<project>/**/.git/info/exclude" makes rclone allow descending into
+# EVERY directory under the project, so with --create-empty-src-dirs an
+# onboarded repo's whole .git folder skeleton (objects/xx, refs/...) still
+# synced even though its files didn't -- arriving on another machine as a
+# .git that git rejects. Per-repo rules first stop the skeleton at .git/
+# and .git/info/ (checked with rclone lsf against a fixture tree).
 GIT_EXCLUDE_FILE=""
 if (( ${#GIT_EXCLUDE_PATTERNS[@]} )); then
   GIT_EXCLUDE_FILE="$(mktemp)"
-  printf -- '- %s\n' "${GIT_EXCLUDE_PATTERNS[@]}" > "$GIT_EXCLUDE_FILE"
+  for rel in "${ONBOARDED_REPOS[@]}"; do
+    printf -- '+ /%s/.git/info/exclude\n- /%s/.git/**\n' "$rel" "$rel"
+  done > "$GIT_EXCLUDE_FILE"
   FILTER_ARGS+=(--filter-from "$GIT_EXCLUDE_FILE")
+fi
+
+# Needs to win against $FILE_FILTERS's own .env excludes (the .env.example
+# carve-out); for .git/info/exclude it now matters only for repos that
+# aren't onboarded, whose .git syncs whole anyway.
+CARVEOUT_FILE=""
+if (( ${#CARVEOUT_PATTERNS[@]} )); then
+  CARVEOUT_FILE="$(mktemp)"
+  printf -- '+ %s\n' ${CARVEOUT_PATTERNS[@]+"${CARVEOUT_PATTERNS[@]}"} > "$CARVEOUT_FILE"
+  FILTER_ARGS+=(--filter-from "$CARVEOUT_FILE")
 fi
 
 FILTER_ARGS+=(--filter-from "$FILE_FILTERS")
@@ -258,12 +295,24 @@ fi
 # --check-access  refuses to run unless RCLONE_TEST markers exist on BOTH sides.
 # --max-delete    aborts if >25% of files would vanish ('force-apply' bypasses this).
 # --links         stores symlinks as .rclonelink files instead of skipping them.
+# --create-empty-src-dirs  syncs directories too, not just files. Without it a
+#                 renamed or deleted folder leaves an empty shell behind on the
+#                 other side forever (bisync only ever moved the files out of
+#                 it). Chosen over --remove-empty-dirs, which would also delete
+#                 folders left empty on purpose (a new, not-yet-filled project).
+#                 The two flags are mutually exclusive in rclone.
+# --track-renames turns a moved/renamed file into a server-side move on Drive
+#                 instead of delete + re-upload. Matching is by hash (Drive
+#                 stores MD5). It does not change what bisync counts as a
+#                 delete, so a big reorganisation still needs 'force-*'.
 COMMON=(
   --workdir "$WORK_PATH"
   "${FILTER_ARGS[@]}"
   --check-access
   --max-delete 25
   --links
+  --create-empty-src-dirs
+  --track-renames
   --verbose
 )
 
@@ -408,9 +457,77 @@ SKIP_ARGS=()
 compute_skip_args() {
   SKIP_ARGS=()
   local rel
-  for rel in "${DIRTY_REPOS[@]}"; do
+  for rel in ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}; do
     SKIP_ARGS+=(--exclude "/$rel/**")
   done
+}
+
+# The skip above has a cost bisync doesn't advertise: an excluded path is
+# left out of the listings bisync saves at the end of the run, so after one
+# skipped run the repo is gone from the baseline entirely. On the next run
+# every one of its files is "new on both sides", and anything that changed
+# in between -- the very edit that made it dirty, plus .git/index,
+# .git/refs/heads/<branch>, .git/logs/HEAD -- becomes a conflict, renamed to
+# .conflict1/.conflict2 on BOTH sides. Reproduced for real: after commit +
+# sync, git said the branch had no commits. Skipping a repo that stays dirty
+# also makes it permanently invisible: delete it locally and it's pulled
+# back down from Drive, since the baseline no longer knows it existed.
+#
+# So a real (non-dry) skip run freezes the skipped repos in the baseline:
+# their lines are copied out of the current listings before the run and put
+# back into the new listings after it, exactly as they were. The next run
+# then diffs each side against the last state they actually agreed on --
+# the local commit is a plain Path1 change, not a conflict. Touches
+# bisync's own state files, so only when they look exactly as expected (v1
+# header, C-sorted by path -- both checked against rclone v1.75); anything
+# else falls back to a loud warning instead of guessing.
+SKIP_SNAPSHOT_DIR=""
+snapshot_skipped() {
+  SKIP_SNAPSHOT_DIR=""
+  (( ${#DIRTY_REPOS[@]} )) || return 0
+  local lst dir rels
+  dir="$(mktemp -d)"
+  rels="$(printf '%s\n' "${DIRTY_REPOS[@]}")"
+  for lst in "$WORK_PATH"/*.path1.lst "$WORK_PATH"/*.path2.lst; do
+    if [[ ! -f "$lst" ]] || ! head -1 "$lst" | grep -q '^# bisync listing v1 '; then
+      yellow "Can't freeze the skipped repo(s) in bisync's baseline (unexpected listing format)."
+      echo "Once they're clean, the first sync that includes them may produce .conflict files."
+      rm -rf "$dir"; return 0
+    fi
+    # Keep every line whose quoted path is a skipped repo or lies inside one.
+    # Via the environment, not awk -v: macOS's awk mangles a multi-line -v
+    # value (found testing this -- it matched nothing).
+    SKIP_RELS="$rels" awk '
+      BEGIN { n = split(ENVIRON["SKIP_RELS"], r, "\n") }
+      NR == 1 { next }
+      { p = $0; sub(/^[^"]*"/, "", p); sub(/"$/, "", p)
+        for (i = 1; i <= n; i++) if (p == r[i] || index(p, r[i] "/") == 1) { print; next } }
+    ' "$lst" > "$dir/$(basename "$lst")"
+  done
+  SKIP_SNAPSHOT_DIR="$dir"
+  logmsg "froze $(cat "$dir"/* | wc -l | tr -d ' ') baseline entries for skipped repo(s): ${DIRTY_REPOS[*]}"
+}
+
+restore_skipped() {
+  [[ -n "$SKIP_SNAPSHOT_DIR" && -d "$SKIP_SNAPSHOT_DIR" ]] || return 0
+  local saved lst tmp
+  for saved in "$SKIP_SNAPSHOT_DIR"/*.lst; do
+    lst="$WORK_PATH/$(basename "$saved")"
+    [[ -f "$lst" && -s "$saved" ]] || continue
+    tmp="$(mktemp)"
+    # Header stays first; body re-sorted by path in byte order, the order
+    # bisync itself writes. A path already present (shouldn't happen -- it
+    # was excluded this run) keeps the new line, not the frozen one.
+    head -1 "$lst" > "$tmp"
+    { tail -n +2 "$lst" | sed 's/^/0 /'; sed 's/^/1 /' "$saved"; } \
+      | awk '{ p = $0; sub(/^[^"]*"/, "", p); sub(/"$/, "", p); print p "\t" $0 }' \
+      | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -s \
+      | awk -F '\t' '$1 != last { last = $1; line = substr($0, length($1) + 2); print substr(line, 3) }' \
+      >> "$tmp" && mv "$tmp" "$lst"
+  done
+  logmsg "restored frozen baseline entries for skipped repo(s)"
+  rm -rf "$SKIP_SNAPSHOT_DIR"
+  SKIP_SNAPSHOT_DIR=""
 }
 
 # Which repos need a GitHub repo of their own. Walks the same way
@@ -542,7 +659,7 @@ write_marker() {  # repo-path
 # below to avoid a generic, possibly-wrong guess.
 git_exclude_repo_in_log() {  # this-run-log-text
   local p prefix
-  for p in "${GIT_EXCLUDE_PATTERNS[@]}"; do
+  for p in ${GIT_EXCLUDE_PATTERNS[@]+"${GIT_EXCLUDE_PATTERNS[@]}"}; do
     prefix="${p#/}"; prefix="${prefix%/.git/**}"
     grep -qF "$prefix/.git/" <<<"$1" && return 0
   done
@@ -640,6 +757,37 @@ EOF
     red "Failed."
     exit "$rc"
   fi
+  local a
+  for a in "$@"; do [[ "$a" == --dry-run ]] && return 0; done
+  check_left_shells "$start"
+}
+
+# bisync logs "Removing directory" and counts it under "Deleted: N (dirs)"
+# even when Drive refuses the rmdir -- under the drive.file scope a folder
+# whose children include trashed items this app isn't authorised on fails
+# with appNotAuthorizedToChild, and bisync reports success regardless. The
+# shell then stays on Drive, and with --create-empty-src-dirs a later run
+# pulls it back down as an empty local folder. Found for real in a test run.
+# Checks each folder this run tried to remove; capped so a big
+# reorganisation doesn't turn into hundreds of API calls.
+check_left_shells() {  # log-offset-where-this-run-started
+  local p left=() n=0
+  while IFS= read -r p; do
+    (( n++ < 60 )) || break
+    [[ -e "$LOCAL_PATH/$p" ]] && continue
+    rclone lsjson --stat "$REMOTE_PATH/$p" >/dev/null 2>&1 && left+=("$p")
+  done < <(tail -c "+$(( $1 + 1 ))" "$LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
+             | sed -nE 's/^.* (INFO|NOTICE) *: (.*): Removing directory$/\2/p' | sort -u)
+  (( ${#left[@]} )) || return 0
+  echo
+  yellow "${#left[@]} folder(s) bisync reported as removed are still on Drive:"
+  printf '  %s\n' "${left[@]}"
+  cat <<'EOF'
+Drive refused to delete them (their trash holds items this app can't touch).
+They'd come back down as empty local folders on a later sync. Trash them in
+the Drive web UI; nothing live is inside (rclone and bisync both see them empty).
+EOF
+  logmsg "left shells on Drive: ${left[*]}"
 }
 
 case "$MODE" in
@@ -703,7 +851,7 @@ EOF
       echo
       red "These ${#DIRTY_REPOS[@]} repo(s) are dirty, and RESYNC does not skip them the way"
       red "plain apply does -- their uncommitted content will be synced too:"
-      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
       echo "Commit first if that is not what you want, or proceed knowingly."
     fi
     echo
@@ -734,9 +882,9 @@ EOF
     check_repos
     if (( ${#DIRTY_REPOS[@]} )); then
       yellow "Would skip ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes (same as apply):"
-      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
       compute_skip_args
-      run_bisync "${COMMON[@]}" "${SKIP_ARGS[@]}" --dry-run
+      run_bisync "${COMMON[@]}" ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"} --dry-run
     else
       run_bisync "${COMMON[@]}" --dry-run
     fi
@@ -821,7 +969,7 @@ EOF
       echo
       red "These ${#DIRTY_REPOS[@]} repo(s) are dirty, and FORCE does not skip them the way"
       red "plain apply does -- their uncommitted content will be synced too:"
-      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
       echo "Commit first if that is not what you want, or proceed knowingly."
     fi
     echo
@@ -852,20 +1000,24 @@ EOF
   # the same patterns as --include instead. Deliberately not part of any sync: this
   # deletes, and it should never happen as a side effect of something else.
   orphans-check|orphans-apply)
-    mapfile -t EXCL < <(grep -E '^- ' "$FILE_FILTERS" | sed 's/^- //')
+    # A read loop, not `mapfile`: mapfile is a bash 4+ builtin, and macOS
+    # still ships bash 3.2 as /bin/bash -- `#!/usr/bin/env bash` picks that
+    # up on any Mac without a newer bash earlier on PATH.
+    EXCL=()
+    while IFS= read -r pat; do EXCL+=("$pat"); done < <(grep -E '^- ' "$FILE_FILTERS" | sed 's/^- //')
     # Also the per-repo .git/** patterns computed near the top of this
     # script -- without these, a repo's now-excluded .git/objects/* (synced
     # whole before it was onboarded) would be invisible to this cleanup too,
     # exactly the "stranded on Drive" problem this verb exists to catch.
-    EXCL+=("${GIT_EXCLUDE_PATTERNS[@]}")
+    EXCL+=(${GIT_EXCLUDE_PATTERNS[@]+"${GIT_EXCLUDE_PATTERNS[@]}"})
     (( ${#EXCL[@]} )) || die "No exclude rules found — nothing can be orphaned."
     INC=()
-    for pat in "${EXCL[@]}"; do INC+=(--include "$pat"); done
+    for pat in ${EXCL[@]+"${EXCL[@]}"}; do INC+=(--include "$pat"); done
 
     logmsg "remote=$REMOTE_PATH filters=$FILE_FILTERS"
     logmsg "patterns: ${EXCL[*]}"
     yellow "Exclude patterns, read from $FILE_FILTERS:"
-    printf '  %s\n' "${EXCL[@]}"
+    printf '  %s\n' ${EXCL[@]+"${EXCL[@]}"}
     cat <<'EOF'
 
 Files on Drive matching these were uploaded before the rule existed. No sync sees
@@ -881,7 +1033,7 @@ EOF
     # prompt to stderr, and sending it to the log turns "asking you something"
     # into "hung for no reason" — with stdout already going to $listing there
     # would be nothing on screen at all. Same trap as the one fixed in 'status'.
-    rclone ls "$REMOTE_PATH" "${INC[@]}" >"$listing" || {
+    rclone ls "$REMOTE_PATH" ${INC[@]+"${INC[@]}"} >"$listing" || {
       rm -f "$listing"; die "Could not list $REMOTE_PATH."; }
     n=$(wc -l < "$listing")
     if (( n == 0 )); then
@@ -899,7 +1051,8 @@ EOF
     # cleanup pass only ever descends into paths this run actually touched —
     # never a blind sweep of the whole remote (that used to reach into
     # unrelated, currently-excluded projects elsewhere on Drive).
-    mapfile -t ORPHAN_DIRS < <(
+    ORPHAN_DIRS=()
+    while IFS= read -r d; do ORPHAN_DIRS+=("$d"); done < <(
       awk '{ sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); print }' "$listing" \
         | while IFS= read -r p; do dirname -- "$p"; done \
         | grep -v '^\.$' | sort -u
@@ -919,7 +1072,7 @@ EOF
     else
       echo
       read -r -p "Press Enter to see the delete dry run (Ctrl-C to abort) " _ || true
-      rclone delete "$REMOTE_PATH" "${INC[@]}" --dry-run --verbose 2>&1 | tee -a "$LOG"
+      rclone delete "$REMOTE_PATH" ${INC[@]+"${INC[@]}"} --dry-run --verbose 2>&1 | tee -a "$LOG"
       echo
       yellow "Nothing has been deleted yet."
       read -r -p "Type DELETE to remove them from Drive: " reply || true
@@ -930,7 +1083,7 @@ EOF
     fi
     logmsg "confirmed — deleting $n file(s)"
 
-    rclone delete "$REMOTE_PATH" "${INC[@]}" --verbose 2>&1 | tee -a "$LOG"
+    rclone delete "$REMOTE_PATH" ${INC[@]+"${INC[@]}"} --verbose 2>&1 | tee -a "$LOG"
     rc=${PIPESTATUS[0]}
     (( rc == 0 )) || { logmsg "RESULT: delete failed (rc=$rc)"; die "Delete failed."; }
     logmsg "RESULT: deleted $n file(s), $bytes bytes — recoverable from Drive trash"
@@ -946,7 +1099,7 @@ EOF
       # this machine, and attempt rmdir against directories this run has no
       # business touching (harmless in practice under drive.file's own
       # permission wall, but the wrong thing to even attempt).
-      for d in "${ORPHAN_DIRS[@]}"; do
+      for d in ${ORPHAN_DIRS[@]+"${ORPHAN_DIRS[@]}"}; do
         rclone rmdirs "$REMOTE_PATH/$d" --leave-root --verbose 2>&1 | tee -a "$LOG" || true
       done
     fi
@@ -971,13 +1124,13 @@ EOF
 
     if (( ${#ONBOARD_SKIPPED_BROKEN[@]} )); then
       yellow "Skipped -- .git exists but isn't a valid repo (a real machine can end up with one that has HEAD/config but no objects/refs, e.g. from an interrupted clone):"
-      printf '  %s\n' "${ONBOARD_SKIPPED_BROKEN[@]}"
+      printf '  %s\n' ${ONBOARD_SKIPPED_BROKEN[@]+"${ONBOARD_SKIPPED_BROKEN[@]}"}
       echo
     fi
 
     if (( ${#ONBOARD_SKIPPED_MANUAL[@]} )); then
       yellow "Skipped -- deliberately excluded via onboard-skip:"
-      printf '  %s\n' "${ONBOARD_SKIPPED_MANUAL[@]}"
+      printf '  %s\n' ${ONBOARD_SKIPPED_MANUAL[@]+"${ONBOARD_SKIPPED_MANUAL[@]}"}
       echo "Reverse with:  42sync onboard-unskip <path>"
       echo
     fi
@@ -994,7 +1147,7 @@ EOF
 Run 'gh auth login' first -- see the TODO from 42sync_install.sh if you haven't."
 
       yellow "${#ONBOARD_CANDIDATES[@]} repo(s) need a GitHub repo of their own (account: $GITHUB_OWNER):"
-      for rel in "${ONBOARD_CANDIDATES[@]}"; do
+      for rel in ${ONBOARD_CANDIDATES[@]+"${ONBOARD_CANDIDATES[@]}"}; do
         name="$(repo_onboard_name "$rel")"
         printf '  %-55s -> %s/%s\n' "$rel" "$GITHUB_OWNER" "$name"
       done
@@ -1010,7 +1163,7 @@ EOF
     if (( ${#ONBOARD_MARKER_ONLY[@]} )); then
       echo
       yellow "${#ONBOARD_MARKER_ONLY[@]} repo(s) already have a github.com remote you own, just need the marker written:"
-      printf '  %s\n' "${ONBOARD_MARKER_ONLY[@]}"
+      printf '  %s\n' ${ONBOARD_MARKER_ONLY[@]+"${ONBOARD_MARKER_ONLY[@]}"}
       echo "No new repo, no push -- just writes .42sync-remote from the remotes already there."
     fi
 
@@ -1036,7 +1189,7 @@ EOF
 
     echo
     failed=0
-    for rel in "${ONBOARD_CANDIDATES[@]}"; do
+    for rel in ${ONBOARD_CANDIDATES[@]+"${ONBOARD_CANDIDATES[@]}"}; do
       repo="$LOCAL_PATH/$rel"
       name="$(repo_onboard_name "$rel")"
       if git -C "$repo" remote get-url github >/dev/null 2>&1; then
@@ -1055,7 +1208,7 @@ EOF
         failed=1
       fi
     done
-    for rel in "${ONBOARD_MARKER_ONLY[@]}"; do
+    for rel in ${ONBOARD_MARKER_ONLY[@]+"${ONBOARD_MARKER_ONLY[@]}"}; do
       repo="$LOCAL_PATH/$rel"
       logmsg "writing marker only for $rel (already has an owned github.com remote)"
       write_marker "$repo"
@@ -1115,11 +1268,23 @@ EOF
     while IFS= read -r -d '' marker; do
       repo="$(dirname "$marker")"
       rel="${repo#$LOCAL_PATH/}"
-      # A .git FILE (not a directory) is a submodule or `git worktree add`
-      # gitlink -- already a legitimate, working checkout, just not in the
-      # usual shape. Only a repo with NEITHER needs reconstituting.
-      [[ -e "$repo/.git" ]] && continue
+      # Validity, not existence: an onboarded repo's .git reaches a receiving
+      # machine as a skeleton -- the carved-out info/exclude plus whatever
+      # empty folders bisync created -- which `[[ -e .git ]]` happily
+      # accepted while git itself rejects it as "not a git repository".
+      # Found for real on this machine's libft and rush01 repos, which
+      # therefore were never reported here. A .git FILE (submodule or
+      # `git worktree add` gitlink) still passes, since git accepts it.
+      # --show-toplevel must be the repo itself: with a broken .git, git -C
+      # walks up and would otherwise report some PARENT repo as valid.
+      top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)"
+      if [[ -n "$top" && "$(cd "$top" && pwd -P)" == "$(cd "$repo" && pwd -P)" ]] \
+          && git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        continue
+      fi
       found=1
+      broken=0
+      [[ -e "$repo/.git" ]] && broken=1
 
       # onboard-apply always names the remote it creates "github" -- the
       # only writer of this marker today, so that line is the safe
@@ -1139,12 +1304,26 @@ EOF
       safe_name="$(basename "$rel")"
       safe_name="${safe_name//[^A-Za-z0-9._-]/-}"
       echo
-      yellow "$rel has a marker but no .git:"
+      if (( broken )); then
+        yellow "$rel has a marker but its .git is not a valid repository (a skeleton that arrived via Drive):"
+      else
+        yellow "$rel has a marker but no .git:"
+      fi
       cat <<EOF
   git clone "$url" "/tmp/${safe_name}-reconstituted"
+EOF
+      # Moved aside, never deleted: whatever is in the skeleton is gone from
+      # nowhere else, and mv-ing the clone's .git onto an existing .git
+      # directory would nest it inside instead of replacing it.
+      (( broken )) && cat <<EOF
+  mv "$repo/.git" "$repo/.git.broken-$(date +%Y%m%d)"
+EOF
+      cat <<EOF
   # Compare its checkout against the working tree already here (it arrived
   # via Drive, so it should mostly match) -- then move its .git into place:
   mv "/tmp/${safe_name}-reconstituted/.git" "$repo/.git"
+  # A fresh clone's .git/info/exclude doesn't list the marker yet:
+  grep -qxF $MARKER_FILENAME "$repo/.git/info/exclude" || echo $MARKER_FILENAME >> "$repo/.git/info/exclude"
   cd "$repo" && git status
   # Anything git reports as modified is real content that reached this
   # machine after the clone's last commit -- review it, don't discard it.
@@ -1227,7 +1406,7 @@ EOF
 
     if [[ "$MODE" == dirty-check ]]; then
       yellow "Would sync ALL repos including ${#DIRTY_REPOS[@]} with uncommitted changes:"
-      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
       run_bisync "${COMMON[@]}" --dry-run
       green "Dry run only — nothing was changed. Run 'dirty-apply' once it looks right."
     else
@@ -1236,7 +1415,7 @@ EOF
         [[ "$2" == "DIRTY" ]] || die "Expected DIRTY as the confirmation argument, got '$2'."
       else
         yellow "Syncing ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes anyway:"
-        printf '  %s\n' "${DIRTY_REPOS[@]}"
+        printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
         read -r -p "Type DIRTY to proceed: " reply || true
         [[ "$reply" == "DIRTY" ]] || die "Aborted — nothing was changed."
       fi
@@ -1253,11 +1432,13 @@ EOF
       run_bisync "${COMMON[@]}"
     else
       yellow "Skipping ${#DIRTY_REPOS[@]} repo(s) with uncommitted changes this run:"
-      printf '  %s\n' "${DIRTY_REPOS[@]}"
+      printf '  %s\n' ${DIRTY_REPOS[@]+"${DIRTY_REPOS[@]}"}
       echo "Commit first, or run '42sync dirty-apply' to sync everything including these."
       echo
       compute_skip_args
-      run_bisync "${COMMON[@]}" "${SKIP_ARGS[@]}"
+      snapshot_skipped
+      run_bisync "${COMMON[@]}" ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
+      restore_skipped
     fi
     green "Synced."
     ;;

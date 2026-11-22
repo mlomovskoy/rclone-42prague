@@ -178,7 +178,7 @@ would be misleading, so refusing instead of guessing Drive is simply empty."
   echo
   printf '  %-4s %-9s %-24s %-16s %s\n' ID STATUS FOLDER WHERE ''
   i=0
-  for name in "${ALL_NAMES[@]}"; do
+  for name in ${ALL_NAMES[@]+"${ALL_NAMES[@]}"}; do
     i=$((i+1))
     here=0; there=0
     grep -qxF -- "$name" <<<"$loc" && here=1
