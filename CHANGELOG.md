@@ -2,6 +2,32 @@
 
 Notable changes, newest first. Commit hashes are short and stable within this repo.
 
+## 1.2.0 -- Rename-aware sync, hardened filters, bash 3.2 (2026-11-23)
+
+- **A plain folder rename no longer trips the delete guard.** `--track-renames`
+  (already present) turns a rename of unchanged files into a server-side move on
+  Drive; the new `--max-delete-renames-aware` stops the guard counting those
+  moves as deletions. Checked on rclone 1.76 with a 12-of-13-file rename (aborted
+  without the flag, moved cleanly with it) and a genuine mass delete (still
+  stopped, data kept). A rename that also edits the files, or a machine whose
+  baseline predates a rename made elsewhere, still needs `force-check`/`force-apply`.
+  The guard's message now says so.
+- **Per-repo exclusion remembered.** Every repo path that ever had an onboarding
+  marker is recorded, so a renamed or deleted onboarded repo's old `.git` on
+  Drive stays excluded instead of being pulled back down. Per-repo
+  `.git/info/exclude` carve-out rules are emitted ahead of the global one.
+- **Empty folders sync** (`--create-empty-src-dirs`), so a renamed or deleted
+  folder no longer leaves an empty shell on the other side.
+- **Skipped (dirty) repos are frozen in bisync's baseline** across a skipped run,
+  so the next run does not turn them into `.conflict` files. Falls back with a
+  warning if the listing format is not recognised.
+- `42sync` warns about folders bisync reported removed that Drive refused to
+  delete (their trash holds items this app cannot touch).
+- `reconstitute` checks that a repo's `.git` is a valid repository, not just that
+  it exists, and moves a broken skeleton aside.
+- macOS bash 3.2 compatibility: no `mapfile`, safe empty-array expansion under
+  `set -u`.
+
 ## 1.1.0 -- Machine heartbeat and notices (2026-11-22)
 
 Releases before this one predate version numbers and are understood as 1.0.0.

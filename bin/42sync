@@ -303,8 +303,15 @@ fi
 #                 The two flags are mutually exclusive in rclone.
 # --track-renames turns a moved/renamed file into a server-side move on Drive
 #                 instead of delete + re-upload. Matching is by hash (Drive
-#                 stores MD5). It does not change what bisync counts as a
-#                 delete, so a big reorganisation still needs 'force-*'.
+#                 stores MD5), so a rename that also edits the file is not
+#                 recognised as a rename.
+# --max-delete-renames-aware  makes --max-delete NOT count a file that
+#                 --track-renames matched as a rename. Without it a plain
+#                 folder rename still reads as a mass deletion and trips the
+#                 guard even though the files are only being moved (tested:
+#                 12 of 13 files renamed -> abort without it, clean move with
+#                 it). A genuine mass delete is still stopped. Requires
+#                 --track-renames.
 COMMON=(
   --workdir "$WORK_PATH"
   "${FILTER_ARGS[@]}"
@@ -313,6 +320,7 @@ COMMON=(
   --links
   --create-empty-src-dirs
   --track-renames
+  --max-delete-renames-aware
   --verbose
 )
 
@@ -740,11 +748,16 @@ EOF
         red "Delete guard tripped."
         cat <<EOF
 
-More than 25% of files would be removed. Usually this means you renamed or moved
-directories — bisync compares by path, so a rename reads as mass deletion plus
-mass creation.
+More than 25% of files would be removed. Plain renames and moves of unchanged
+files are tracked by content hash and do NOT count toward this, so this is
+usually one of:
+  - a rename that also changed the files, or files with no usable hash;
+  - this machine's baseline predating the rename (e.g. it was renamed on
+    another machine and on Drive, and this one still has the old names);
+  - a genuine mass deletion.
 
-Check the log, then:  42sync force-check   (then force-apply once it looks right)
+Check the log for which "File was deleted" lines have no matching "File is new",
+then:  42sync force-check   (and force-apply once it looks right)
 EOF
       fi
     elif grep -q 'Access test failed' <<<"$this_run"; then

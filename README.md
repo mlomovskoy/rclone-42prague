@@ -637,11 +637,16 @@ longer push* below.
 
 ## Known limitations
 
-**Renaming directories is expensive.** bisync compares by path, so renaming a folder
-reads as "every file inside was deleted, and an equal number appeared." The delete
-guard will abort. This is correct behaviour; run `42sync force-check` and confirm the
-dry run shows matched delete/create pairs, then `42sync force-apply`. Reorganize
-*before* a sync, not between syncs, when you can.
+**Renaming directories mostly just works now -- but rename on one machine at a time.**
+bisync compares by path, so a rename reads as "every file inside was deleted, and an
+equal number appeared." Renames of unchanged files are matched by content hash and
+sent to Drive as a server-side move, and they are not counted by the delete guard,
+so a plain folder rename syncs without `force-*`. What still trips the guard: a
+rename that also edits the files, a machine whose baseline predates a rename made
+elsewhere (the other machine, or Drive, already has the new names), or a genuine
+mass delete. For those, run `42sync force-check`, confirm the dry run shows matched
+delete/create pairs, then `42sync force-apply`. Rename on one machine, sync, and only
+then work on the other.
 
 **Repos you can no longer push.** vogsphere revokes write access once you mark a
 project finished / submit it for evaluation — not once an evaluation has actually
