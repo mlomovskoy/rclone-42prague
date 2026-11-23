@@ -534,7 +534,10 @@ created on first run, yours to edit)
 
 Every `42sync` run that touches Drive (`apply`, `check`, `status`, `seed`, ...)
 ends by publishing a small **heartbeat** for this machine and reading everyone
-else's. `42sync status --all` shows the result:
+else's. Installing or upgrading the tools (`42sync_install.sh apply`) publishes one
+too, with an upgrade notice saying which version and commit it came from, so the
+other machines can see an upgrade happened. Each heartbeat carries the last 5 runs;
+`42sync status --all` shows the last 3 per machine. `42sync status --all` shows the result:
 
 ```
 MACHINE   ID        OS     TOOL                  LAST RUN        LAST SYNC  LAYOUT

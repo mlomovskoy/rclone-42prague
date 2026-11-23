@@ -49,6 +49,9 @@ META_STALE_DAYS=14
 META_PRUNE_DAYS=90
 META_KEEP_MESSAGES=20
 
+# How many past runs each heartbeat carries.
+META_HISTORY_KEEP=5
+
 # Keeps an unreachable Drive from stalling a sync that has already finished.
 META_RCLONE_OPTS=(--contimeout 10s --timeout 30s --retries 1 --low-level-retries 1)
 
@@ -58,7 +61,7 @@ META_RCLONE_OPTS=(--contimeout 10s --timeout 30s --retries 1 --low-level-retries
 meta_verb_publishes() {
   case "$1" in
     apply|check|dirty-apply|dirty-check|verify|force-check|force-apply|\
-    orphans-check|orphans-apply|resync-check|resync-apply|seed|status|note) return 0 ;;
+    orphans-check|orphans-apply|resync-check|resync-apply|seed|status|note|install) return 0 ;;
   esac
   return 1
 }
@@ -287,6 +290,17 @@ meta_write_state() {
   mkdir -p "$META_LOCAL_PATH/outbox"
   meta_emit_transition_notices "$prev" "$layout_hash" "$layout_list" "$verb" "$result"
 
+  # The last META_HISTORY_KEEP runs, newest first, one plain string each
+  # ("<time> <verb> <result> <exit> <version>"). state.json is overwritten
+  # every run, so without this "last run failed" hides that the run before it
+  # was a success. Messages are NOT repeated here: they already live, with
+  # their own retention, in the outbox, and duplicating them would make a
+  # reader see the same notice twice.
+  local hist_entry hist
+  hist_entry="$now $(meta_json_str "$verb") $(meta_json_str "$result") $rc $(meta_json_str "$TOOL_VERSION")"
+  hist="$(printf '%s\n' "$hist_entry"; meta_get_list "$prev" history)"
+  hist="$(printf '%s\n' "$hist" | sed '/^$/d' | head -n "$META_HISTORY_KEEP")"
+
   tmp="$(mktemp "$META_LOCAL_PATH/.state.XXXXXX")"
   {
     printf '{\n'
@@ -303,6 +317,9 @@ meta_write_state() {
     printf '  "last_run_log": "%s",\n'    "$(meta_json_str "$logname")"
     printf '  "last_apply_ok": "%s",\n'   "$last_ok"
     printf '  "baseline_at": "%s",\n'     "$baseline"
+    printf '  "history": [\n'
+    printf '%s\n' "$hist" | while IFS= read -r h; do printf '    "%s",\n' "$h"; done | sed '$ s/,$//'
+    printf '  ],\n'
     printf '  "layout_hash": "%s",\n'     "$layout_hash"
     printf '  "layout_top": [\n'
     if [[ -n "$layout_list" ]]; then
@@ -359,8 +376,13 @@ meta_emit_transition_notices() {
     meta_emit notice layout-changed "{\"added\":$added,\"removed\":$removed}"
   fi
   old_ver="$(meta_get "$prev" tool_version)"
-  if [[ -n "$old_ver" && "$old_ver" != "$TOOL_VERSION" ]]; then
-    meta_emit notice tool-upgraded "{\"from\":\"$(meta_json_str "$old_ver")\",\"to\":\"$(meta_json_str "$TOOL_VERSION")\"}"
+  local old_commit new_commit
+  old_commit="$(meta_get "$prev" tool_commit)"; old_commit="${old_commit%+dirty}"
+  new_commit="${TOOL_COMMIT%+dirty}"
+  # A new version, or the same version from a different commit (a fix that
+  # was not given a release number). "+dirty" alone is not an upgrade.
+  if [[ -n "$old_ver" ]] && { [[ "$old_ver" != "$TOOL_VERSION" ]] || { [[ -n "$old_commit" && "$old_commit" != "unknown" && "$new_commit" != "unknown" && "$old_commit" != "$new_commit" ]]; }; }; then
+    meta_emit notice tool-upgraded "{\"from\":\"$(meta_json_str "$old_ver")\",\"to\":\"$(meta_json_str "$TOOL_VERSION")\",\"from_commit\":\"$(meta_json_str "$old_commit")\",\"to_commit\":\"$(meta_json_str "$new_commit")\"}"
   fi
   if [[ "$result" == "guard-aborted" ]]; then
     local detail
@@ -483,8 +505,9 @@ meta_on_exit() {
   meta_prune_outbox 2>/dev/null || true
 
   local pushed=0
+  META_LAST_PUSHED=0
   if meta_push; then
-    pushed=1
+    pushed=1; META_LAST_PUSHED=1
     logmsg "meta: published heartbeat $(meta_machine_id) result=$result"
   else
     yellow "meta: could not reach Drive to publish this machine's heartbeat (kept locally, will retry next run)"
@@ -504,6 +527,20 @@ meta_on_exit() {
     footer) meta_footer ;;
   esac
   return 0
+}
+
+# Called by the installer once new tools are in place, so an upgrade is itself
+# visible to the other machines: a heartbeat with the new version and commit,
+# plus a tool-upgraded notice naming where it came from. Silent and harmless
+# on a machine with no Drive remote yet or with notices turned off. $1 is the
+# directory holding the freshly written VERSION stamp.
+meta_publish_install() {
+  (( META_ENABLED )) || return 0
+  [[ -f "$1/VERSION" ]] && HELPERS_DIR="$1"
+  # No prompting: an encrypted rclone config with no password in this
+  # environment must make this skip, never hang an install waiting on a tty.
+  RCLONE_ASK_PASSWORD=false rclone listremotes 2>/dev/null | grep -qx 'gdrive:' || return 0
+  RCLONE_ASK_PASSWORD=false meta_on_exit install 0
 }
 
 # --------------------------------------------------------------- reporting ---
@@ -568,6 +605,16 @@ meta_table() {
     (( age >= META_STALE_DAYS )) && flags="$flags STALE"
     printf '%-14s %-9s %-7s %-26s %-22s %-10s %s%s\n' "$label" "$sid" "$os" "$ver ($commit)" \
       "$verb $res $(meta_age_from_iso "$at")" "$(meta_age_from_iso "$ok")" "$lay" "$flags"
+  done
+  echo
+  echo "Recent runs (newest first):"
+  for sid in $(meta_machine_id) $(meta_seen_ids); do
+    if [[ "$sid" == "$(meta_machine_id)" ]]; then sf="$own"; else sf="$META_LOCAL_PATH/seen/$sid/state.json"; fi
+    [[ -f "$sf" ]] || continue
+    printf '  %s:\n' "$(meta_get "$sf" label | meta_clean 24)"
+    meta_get_list "$sf" history | head -n 3 | while read -r t v r e ver; do
+      printf '    %-12s %-9s %-14s exit %s  (%s)\n' "$(meta_age_from_iso "$t") ago" "$v" "$r" "$e" "$ver"
+    done
   done
   echo
   echo "* = this machine.  LAST SYNC = last successful apply/seed/resync."

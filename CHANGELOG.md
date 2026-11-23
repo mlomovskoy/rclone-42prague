@@ -2,6 +2,25 @@
 
 Notable changes, newest first. Commit hashes are short and stable within this repo.
 
+## 1.3.0 -- Upgrades and run history are visible to other machines (2026-11-23)
+
+- **Installing or upgrading publishes a heartbeat.** `42sync_install.sh apply`
+  now ends by telling the other machines this one was upgraded: new version and
+  commit, plus a `tool-upgraded` notice naming where it came from
+  (`from`/`to` version and `from_commit`/`to_commit`). Skipped on a dry run, on
+  `notices off`, and on a machine with no Drive remote yet; it never prompts for
+  an rclone password and never fails the install.
+- **`tool-upgraded` also fires for a new commit at the same version** (a fix
+  that was not given a release number), not only for a version change. A
+  `+dirty` suffix alone is not an upgrade.
+- **Each heartbeat now carries the last 5 runs** (time, verb, result, exit code,
+  tool version), so "last run failed" no longer hides that the run before it
+  succeeded. Notices are not repeated there; they keep their own retention in
+  the outbox.
+- `42sync status --all` shows the last 3 runs per machine under the table.
+- Heartbeat format gains a field; older readers ignore it, so the protocol
+  number stays 1.
+
 ## 1.2.0 -- Rename-aware sync, hardened filters, bash 3.2 (2026-11-23)
 
 - **A plain folder rename no longer trips the delete guard.** `--track-renames`

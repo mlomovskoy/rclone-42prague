@@ -892,6 +892,16 @@ install_scripts
 setup_shell
 post_checks
 
+# Tell the other machines this one was just upgraded (new version + commit).
+# Skipped on a dry run, and never allowed to fail the install: it is
+# observability, not part of getting the tools in place.
+if (( ! DRY )); then
+  ( PATH="$BIN_PATH:$PATH"
+    META_LAST_PUSHED=0
+    meta_publish_install "$BIN_PATH/42-internal"
+    (( META_LAST_PUSHED )) && green "ok         published this machine's install heartbeat to the other machines" ) || true
+fi
+
 echo
 if (( DRY )); then
   yellow "Dry run — nothing was changed."
