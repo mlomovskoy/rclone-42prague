@@ -1359,7 +1359,10 @@ EOF
     (( META_ENABLED )) || die "Machine notices are turned off on this machine (META_ENABLED=0)."
     meta_load_version
     mkdir -p "$META_LOCAL_PATH"
-    meta_note "$2"
+    if (( ${#2} > META_NOTE_MAX )); then
+      die "That note is ${#2} characters; the limit is $META_NOTE_MAX. Shorten it, or send it as two notes."
+    fi
+    meta_note "$2" || die "Could not write the note."
     green "Noted. Other machines will see it the next time they run 42sync."
     ;;
 

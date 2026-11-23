@@ -49,6 +49,9 @@ META_STALE_DAYS=14
 META_PRUNE_DAYS=90
 META_KEEP_MESSAGES=20
 
+# Longest free-text note `42sync note` accepts, in characters.
+META_NOTE_MAX=500
+
 # How many past runs each heartbeat carries.
 META_HISTORY_KEEP=5
 
@@ -238,11 +241,17 @@ meta_os() { uname -s 2>/dev/null | tr 'A-Z' 'a-z'; }
 # matches them). Depth 2 because the renames that broke a sync (a project
 # folder renamed on one machine, not on Drive) happen one level below the top.
 meta_layout_list() {
-  local d name sub
+  local d name sub included
   [[ -d "$LOCAL_PATH" ]] || return 0
+  # Only the projects this machine actually syncs (the "+ /<name>/**" lines of
+  # its project filter). Listing every folder under $LOCAL_PATH made two
+  # machines "differ" over folders neither syncs, so the flag was always on.
+  included="$(sed -nE 's#^\+ /([^/]+)/\*\*$#\1#p' "${PROJECT_FILTERS:-/nonexistent}" 2>/dev/null)"
+  [[ -n "$included" ]] || return 0
   for d in "$LOCAL_PATH"/*/; do
     [[ -d "$d" ]] || continue
     d="${d%/}"; name="${d##*/}"
+    printf '%s\n' "$included" | grep -qxF -- "$name" || continue
     printf '%s\n' "$name"
     [[ -e "$d/.git" ]] && continue
     for sub in "$d"/*/; do
@@ -320,6 +329,7 @@ meta_write_state() {
     printf '  "history": [\n'
     printf '%s\n' "$hist" | while IFS= read -r h; do printf '    "%s",\n' "$h"; done | sed '$ s/,$//'
     printf '  ],\n'
+    printf '  "layout_scope": "synced",\n'
     printf '  "layout_hash": "%s",\n'     "$layout_hash"
     printf '  "layout_top": [\n'
     if [[ -n "$layout_list" ]]; then
@@ -365,7 +375,10 @@ meta_emit_transition_notices() {
   local prev="$1" new_hash="$2" new_list="$3" verb="$4" result="$5"
   local old_hash old_ver added removed
   old_hash="$(meta_get "$prev" layout_hash)"
-  if [[ -n "$old_hash" && "$old_hash" != "$new_hash" ]]; then
+  # Only compare like with like: a heartbeat from before layouts were scoped
+  # to synced projects listed every folder, and diffing against it would
+  # announce that all of them "were removed".
+  if [[ -n "$old_hash" && "$old_hash" != "$new_hash" && "$(meta_get "$prev" layout_scope)" == synced ]]; then
     local oldf newf
     oldf="$(mktemp)"; newf="$(mktemp)"
     meta_get_list "$prev" layout_top | LC_ALL=C sort > "$oldf"
@@ -395,7 +408,10 @@ meta_emit_transition_notices() {
 meta_note() {
   local text="$1"
   [[ -n "$text" ]] || return 1
-  text="$(printf '%s' "$text" | meta_clean 500)"
+  # Refuse rather than cut: a note silently truncated mid-word reads as the
+  # sender's whole message. The caller reports the length to the user.
+  (( ${#text} <= META_NOTE_MAX )) || return 2
+  text="$(printf '%s' "$text" | meta_clean "$META_NOTE_MAX")"
   meta_emit notice note "{\"text\":\"$(meta_json_str "$text")\"}"
 }
 
@@ -469,10 +485,16 @@ meta_show_unread() {
       label="$(meta_get "$META_LOCAL_PATH/seen/$sid/state.json" label)"; [[ -n "$label" ]] || label="$sid"
       at="$(printf '%s' "$line" | sed -nE 's/.*"at":"([^"]*)".*/\1/p' | meta_clean 20)"
       topic="$(printf '%s' "$line" | sed -nE 's/.*"topic":"([^"]*)".*/\1/p' | meta_clean 40)"
-      text="$(printf '%s' "$line" | sed -nE 's/.*"body":(.*)\}$/\1/p' | meta_clean 300)"
-      # A free-text note reads better as its text than as raw JSON.
+      local body
+      body="$(printf '%s' "$line" | sed -nE 's/.*"body":(.*)\}$/\1/p')"
+      # Parse BEFORE capping the length: cutting the JSON first removes its
+      # closing `"}`, the pattern below then fails, and a long note displayed as
+      # nothing at all. A note may be up to META_NOTE_MAX characters; other
+      # bodies are shown raw and capped.
       if [[ "$topic" == note ]]; then
-        text="$(printf '%s' "$text" | sed -nE 's/^\{"text":"(.*)"\}$/\1/p' | meta_json_unstr)"
+        text="$(printf '%s' "$body" | sed -nE 's/^\{"text":"(.*)"\}$/\1/p' | meta_json_unstr | meta_clean "$META_NOTE_MAX")"
+      else
+        text="$(printf '%s' "$body" | meta_clean 300)"
       fi
       if (( META_UNREAD_SHOWN == 0 )); then echo; yellow "Notices from other machines:"; fi
       META_UNREAD_SHOWN=$((META_UNREAD_SHOWN + 1))
@@ -571,10 +593,26 @@ meta_footer() {
   fi
 }
 
+# Do two heartbeats agree on folder names, looking only at the projects BOTH
+# sync? Prints "same", "DIFFERS" or "n/a" (nothing in common). Older heartbeats
+# listed every folder under ~/Projects; restricting to the shared top-level
+# names also makes those comparable.
+meta_layout_compare() {
+  local a b ta tb common
+  a="$(meta_get_list "$1" layout_top)"; b="$(meta_get_list "$2" layout_top)"
+  ta="$(printf '%s\n' "$a" | grep -v '/' | LC_ALL=C sort -u)"
+  tb="$(printf '%s\n' "$b" | grep -v '/' | LC_ALL=C sort -u)"
+  common="$(LC_ALL=C comm -12 <(printf '%s\n' "$ta") <(printf '%s\n' "$tb"))"
+  [[ -n "$common" ]] || { printf 'n/a'; return; }
+  local fa fb
+  fa="$(printf '%s\n' "$a" | LIST="$common" awk 'BEGIN{n=split(ENVIRON["LIST"],c,"\n");for(i=1;i<=n;i++)if(c[i]!="")ok[c[i]]=1}{split($0,p,"/");if(p[1] in ok)print}' | LC_ALL=C sort)"
+  fb="$(printf '%s\n' "$b" | LIST="$common" awk 'BEGIN{n=split(ENVIRON["LIST"],c,"\n");for(i=1;i<=n;i++)if(c[i]!="")ok[c[i]]=1}{split($0,p,"/");if(p[1] in ok)print}' | LC_ALL=C sort)"
+  [[ "$fa" == "$fb" ]] && printf 'same' || printf 'DIFFERS'
+}
+
 # `status --all`. Own row from the heartbeat just written, others from seen/.
 meta_table() {
-  local own_hash own="$META_LOCAL_PATH/state.json"
-  own_hash="$(meta_get "$own" layout_hash)"
+  local own="$META_LOCAL_PATH/state.json"
   printf '%-14s %-9s %-7s %-26s %-22s %-10s %s\n' MACHINE ID OS TOOL "LAST RUN" "LAST SYNC" LAYOUT
   local sid sf mark flags newest="$TOOL_VERSION" newest_label="" nv
   # Newest version anywhere, so every row (this machine's included) can be
@@ -599,7 +637,7 @@ meta_table() {
     verb="$(meta_get "$sf" last_run_verb | meta_clean 14)"; res="$(meta_get "$sf" last_run_result | meta_clean 14)"
     at="$(meta_get "$sf" last_run_at)"; ok="$(meta_get "$sf" last_apply_ok)"
     age="$(meta_age_days "$at")"
-    lay=same; [[ "$(meta_get "$sf" layout_hash)" == "$own_hash" ]] || lay=DIFFERS
+    lay="$(meta_layout_compare "$own" "$sf")"
     flags=""
     [[ "$(meta_ver_cmp "$ver" "$newest")" == -1 ]] && flags="$flags outdated"
     (( age >= META_STALE_DAYS )) && flags="$flags STALE"

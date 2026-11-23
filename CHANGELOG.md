@@ -2,6 +2,25 @@
 
 Notable changes, newest first. Commit hashes are short and stable within this repo.
 
+## 1.3.1 -- Notice and layout fixes (2026-11-23)
+
+- **Notes longer than ~300 characters displayed as blank** on the receiving
+  machine: the text was cut before it was parsed, which removed the closing
+  quote the parser needs. It is now parsed first and shown in full, up to the
+  500-character limit.
+- **`42sync note` refuses a note over 500 characters** with the length and the
+  limit, instead of silently cutting it mid-word and sending that as the whole
+  message.
+- **`status --all` layout column compares only what both machines sync.** It used
+  to hash every folder under `~/Projects`, so any machine with an extra, unsynced
+  folder showed `DIFFERS` forever. A heartbeat now lists only the projects that
+  machine syncs, and the comparison looks only at projects present on both
+  (older heartbeats that listed everything compare correctly too). `n/a` means no
+  project in common.
+- Upgrading from the old format no longer announces that every folder "was
+  removed": the layout-changed notice is only sent when the previous heartbeat
+  used the same scope.
+
 ## 1.3.0 -- Upgrades and run history are visible to other machines (2026-11-23)
 
 - **Installing or upgrading publishes a heartbeat.** `42sync_install.sh apply`

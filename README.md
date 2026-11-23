@@ -549,8 +549,9 @@ campus    8e98922f  linux  1.0.0 (a1b2c3d)         apply ok 41d    41d        DI
   `failed`, `guard-aborted`). **LAST SYNC** is the last *successful* real sync
   (`apply`, `dirty-apply`, `force-apply`, `resync-apply`, `seed`) -- a dry run
   or `status` never moves it.
-- **LAYOUT** compares the folder names (two levels deep, not inside repos)
-  with this machine's. `DIFFERS` after a rename is the usual reason a sync
+- **LAYOUT** compares the folder names (two levels deep, not inside repos) of the
+  projects both machines sync -- unsynced folders on either side are ignored, and
+  `n/a` means the two share no project. `DIFFERS` after a rename is the usual reason a sync
   trips the delete guard: one machine renamed folders, the other hasn't yet.
   A machine that notices its own layout changed also leaves a `layout-changed`
   notice naming what was added and removed.
@@ -561,7 +562,7 @@ campus    8e98922f  linux  1.0.0 (a1b2c3d)         apply ok 41d    41d        DI
   protocol number at install time (`~/bin/42-internal/VERSION`). A machine
   speaking a newer protocol than yours is shown as such, not guessed at.
 
-`42sync note "text"` leaves a free-text notice; other machines print it, once,
+`42sync note "text"` leaves a free-text notice (up to 500 characters; longer is refused); other machines print it, once,
 the next time they run `42sync`. Notices are only ever displayed -- nothing in
 one is executed.
 
